@@ -115,11 +115,6 @@ def main(items_file: str, env_file: str):
     # Run the async task loop
     responses = asyncio.run(execute_trials())
     
-    print(f"\nTotal responses received: {len(responses)}")
-    successful_responses = [r for r in responses if r.success]
-    print(f"Successful responses: {len(successful_responses)}")
-    if responses:
-        print(f"Sample response: {responses[0]}")
     
     # Compile task session
     session = TaskSession(
@@ -131,10 +126,10 @@ def main(items_file: str, env_file: str):
     
     # Generate report
     report_config = ReportConfig(
-        output_format=os.getenv('OUTPUT_FORMAT', 'json'),
+        output_format=os.getenv('OUTPUT_FORMAT', 'html'),
         include_raw_responses=os.getenv('INCLUDE_RAW_RESPONSES', 'false').lower() == 'true',
         report_style=os.getenv('REPORT_STYLE', 'detailed'),
-        output_file=os.getenv('REPORT_OUTPUT_FILE', 'report.json')
+        output_file=os.getenv('REPORT_OUTPUT_FILE', 'report.html')
     )
     
     generate_report(session, report_config)
