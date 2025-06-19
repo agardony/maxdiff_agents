@@ -104,9 +104,6 @@ class MaxDiffEngine:
         Raises:
             ValueError: If bestItem and worstItem are the same, or not part of presentedItems.
         """
-        if self.is_complete():
-            print("Warning: Attempted to record choice after task completion.")
-            return
         
         if best_item.id == worst_item.id:
             raise ValueError('Best and worst items cannot be the same.')

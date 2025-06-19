@@ -59,7 +59,7 @@ Respond only with the JSON object, no additional text."""
         """Parse the model response to extract best and worst item choices."""
         try:
             # Try to extract JSON from the response
-            json_match = re.search(r'\\{.*\\}', response_text, re.DOTALL)
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
                 json_str = json_match.group()
                 parsed = json.loads(json_str)

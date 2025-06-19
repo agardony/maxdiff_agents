@@ -78,6 +78,10 @@ def main(items_file: str, env_file: str):
         print("Error: No API keys found. Please configure at least one model API key in your .env file.")
         return
     
+    print(f"Initialized {len(clients)} model clients:")
+    for client in clients:
+        print(f"  - {client.model_name}")
+    
     # Execute trials asynchronously
     async def execute_trials():
         responses = []
@@ -93,32 +97,29 @@ def main(items_file: str, env_file: str):
         for trial in trials:
             for client in clients:
                 task = asyncio.create_task(execute_single_trial_model(trial, client))
-                tasks.append((task, trial))
+                tasks.append((task, trial, client))
+        
+        print(f"Created {len(tasks)} tasks ({len(trials)} trials × {len(clients)} clients)")
         
         # Wait for all tasks to complete
-        for task, trial in tasks:
-            response = await task
-            # Find the corresponding items for recording the choice
-            best_item = next((item for item in trial.items if item.id == response.best_item_id), None)
-            worst_item = next((item for item in trial.items if item.id == response.worst_item_id), None)
-            
-            if best_item and worst_item:
-                try:
-                    engine.record_choice(
-                        presented_items=trial.items,
-                        best_item=best_item,
-                        worst_item=worst_item,
-                        model_name=response.model_name,
-                        reasoning=response.reasoning
-                    )
-                except Exception as e:
-                    print(f"Warning: Could not record choice for trial {trial.trial_number}, model {response.model_name}: {e}")
-            
-            responses.append(response)
+        for i, (task, trial, client) in enumerate(tasks):
+            try:
+                response = await task
+                responses.append(response)
+                print(f"Completed task {i+1}/{len(tasks)} - Trial {trial.trial_number}, Client {client.model_name}")
+            except Exception as e:
+                print(f"Error in task {i+1}/{len(tasks)} - Trial {trial.trial_number}, Client {client.model_name}: {e}")
+        
         return responses
     
     # Run the async task loop
     responses = asyncio.run(execute_trials())
+    
+    print(f"\nTotal responses received: {len(responses)}")
+    successful_responses = [r for r in responses if r.success]
+    print(f"Successful responses: {len(successful_responses)}")
+    if responses:
+        print(f"Sample response: {responses[0]}")
     
     # Compile task session
     session = TaskSession(
