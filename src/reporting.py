@@ -238,12 +238,24 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
     
     # Generate model agreement matrix
     models = list(results.agreement_matrix.keys())
-    agreement_header = "<th>Model</th>" + "".join(f"<th>{model.split('-')[-1]}</th>" for model in models)
+    
+    # Helper function to get provider name from model string (reuse from above)
+    def get_provider_name_short(model_name):
+        if 'openai' in model_name.lower() or 'gpt' in model_name.lower():
+            return 'OpenAI'
+        elif 'anthropic' in model_name.lower() or 'claude' in model_name.lower():
+            return 'Anthropic'
+        elif 'google' in model_name.lower() or 'gemini' in model_name.lower():
+            return 'Google'
+        else:
+            return model_name.split('-')[0].capitalize()
+    
+    agreement_header = "<th>Model</th>" + "".join(f"<th>{get_provider_name_short(model)}</th>" for model in models)
     agreement_rows = ""
     
     for model1 in models:
-        model1_short = model1.split('-')[-1]
-        row = f"<td class='model-name'>{model1_short}</td>"
+        model1_provider = get_provider_name_short(model1)
+        row = f"<td class='model-name'>{model1_provider}</td>"
         for model2 in models:
             agreement = results.agreement_matrix.get(model1, {}).get(model2, 0)
             if model1 == model2:
@@ -257,19 +269,32 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
             row += f"<td class='{cell_class}'>{agreement:.3f}</td>"
         agreement_rows += f"<tr>{row}</tr>"
     
+    # Helper function to get provider name from model string
+    def get_provider_name(model_name):
+        if 'openai' in model_name.lower() or 'gpt' in model_name.lower():
+            return 'OpenAI'
+        elif 'anthropic' in model_name.lower() or 'claude' in model_name.lower():
+            return 'Anthropic'
+        elif 'google' in model_name.lower() or 'gemini' in model_name.lower():
+            return 'Google'
+        else:
+            return model_name.split('-')[0].capitalize()
+    
     # Generate disagreement points section
     disagreement_cards = ""
     for i, disagreement in enumerate(results.disagreement_points[:5]):  # Show top 5
         trial_items = ", ".join([item['name'] for item in disagreement['items']])
         responses_html = ""
         for resp in disagreement['responses']:
-            model_short = resp['model'].split('-')[-1]
+            model_provider = get_provider_name(resp['model'])
             best_item = next((item['name'] for item in disagreement['items'] if item['id'] == resp['best_item_id']), 'Unknown')
             worst_item = next((item['name'] for item in disagreement['items'] if item['id'] == resp['worst_item_id']), 'Unknown')
+            # Don't truncate reasoning - show full text
+            reasoning_text = resp['reasoning'] if resp['reasoning'] else 'No reasoning provided'
             responses_html += f"""
             <div class="response-item">
-                <strong>{model_short}:</strong> Best: {best_item}, Worst: {worst_item}
-                <div class="reasoning">{resp['reasoning'][:100]}...</div>
+                <strong>{model_provider}:</strong> Best: {best_item}, Worst: {worst_item}
+                <div class="reasoning">{reasoning_text}</div>
             </div>
             """
         
@@ -584,7 +609,7 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
         <div class="section">
             <h2>🤖 AI Models Used</h2>
             <div class="models-list">
-                {' '.join(f'<span class="model-tag">{model}</span>' for model in results.models_used)}
+                {' '.join(f'<span class="model-tag">{get_provider_name(model)}</span>' for model in results.models_used)}
             </div>
         </div>
         
