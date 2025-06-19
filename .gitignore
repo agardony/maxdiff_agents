@@ -215,7 +215,7 @@ secrets.json
 logs/
 
 # Data files (uncomment if you don't want to track data)
-# data/
+data/
 # *.csv
 # *.xlsx
 # *.json

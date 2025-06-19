@@ -4,6 +4,7 @@ Main entry for MaxDiff AI agents program.
 import os
 import asyncio
 import click
+import time
 from dotenv import load_dotenv
 # Import handling for both package and standalone execution
 try:
@@ -11,13 +12,15 @@ try:
     from .types import MaxDiffItem, EngineConfig, TaskSession, ReportConfig
     from .maxdiff_engine import MaxDiffEngine
     from .model_clients import OpenAIClient, AnthropicClient, GoogleClient
-    from .reporting import generate_report
+    from .reporting import generate_report, aggregate_results
+    from .logging_utils import MaxDiffLogger, get_environment_settings
 except ImportError:
     # Fallback to absolute imports (when run standalone via max_diff.py)
     from src.types import MaxDiffItem, EngineConfig, TaskSession, ReportConfig
     from src.maxdiff_engine import MaxDiffEngine
     from src.model_clients import OpenAIClient, AnthropicClient, GoogleClient
-    from src.reporting import generate_report
+    from src.reporting import generate_report, aggregate_results
+    from src.logging_utils import MaxDiffLogger, get_environment_settings
 
 
 @click.command()
@@ -29,6 +32,15 @@ def main(items_file: str, env_file: str):
     """
     # Load environment configuration
     load_dotenv(env_file)
+    
+    # Initialize logger
+    logger = MaxDiffLogger()
+    
+    # Log environment settings (excluding sensitive keys)
+    env_settings = get_environment_settings()
+    logger.log_environment_settings(env_settings)
+    
+    print(f"📊 Logging to data directory with run ID: {logger.timestamp}")
     
     # Load configuration from .env
     config = EngineConfig(
@@ -112,9 +124,12 @@ def main(items_file: str, env_file: str):
         
         return responses
     
-    # Run the async task loop
+    # Run the async task loop with timing
+    start_time = time.time()
     responses = asyncio.run(execute_trials())
+    execution_time = time.time() - start_time
     
+    print(f"⏱️  Total execution time: {execution_time:.2f} seconds")
     
     # Compile task session
     session = TaskSession(
@@ -133,6 +148,18 @@ def main(items_file: str, env_file: str):
     )
     
     generate_report(session, report_config)
+    
+    # Log comprehensive results to CSV
+    results = aggregate_results(session)
+    logger.log_run_results(session, results, report_config, execution_time)
+    
+    # Print logging summary
+    log_summary = logger.get_run_summary()
+    print("\n📁 CSV Files Created:")
+    print(f"   • Main Results: {log_summary['runs_csv']}")
+    print(f"   • Settings: {log_summary['settings_csv']}")
+    print(f"   • Item Details: {log_summary['item_results_csv']}")
+    print(f"   • Response Details: {log_summary['responses_csv']}")
 
 
 if __name__ == '__main__':

@@ -110,15 +110,42 @@ Performance
 
 ## Output
 
-The program generates:
+The program generates multiple types of output:
 
-1. **Console Summary**: Rich terminal output with tables showing rankings and agreement
-2. **JSON Report**: Detailed structured output including:
-   - Consensus ranking with utility scores
-   - Item-level metrics (best/worst rates, net scores)
-   - Model agreement matrix
-   - Disagreement analysis
-   - Optional raw responses
+### 1. Console Summary
+Rich terminal output with tables showing rankings and agreement analysis.
+
+### 2. HTML/JSON Reports
+Detailed structured output including:
+- Consensus ranking with utility scores
+- Item-level metrics (best/worst rates, net scores)
+- Model agreement matrix
+- Disagreement analysis
+- Optional raw responses
+
+### 3. Comprehensive CSV Logging
+Automatic timestamped CSV files saved to the `data/` directory:
+
+- **`maxdiff_runs_YYYYMMDD_HHMMSS.csv`**: Main run results with:
+  - Execution metrics (trials, models, success rates)
+  - Top/bottom items and utility scores
+  - Agreement statistics
+  - Performance data
+
+- **`maxdiff_settings_YYYYMMDD_HHMMSS.csv`**: Environment configuration (API keys redacted for security)
+
+- **`maxdiff_item_results_YYYYMMDD_HHMMSS.csv`**: Detailed item-level data:
+  - Individual item rankings and scores
+  - Model-specific utility scores
+  - Agreement metrics per item
+
+- **`maxdiff_responses_YYYYMMDD_HHMMSS.csv`**: Response-level details:
+  - Individual trial responses
+  - Best/worst choices per model
+  - Error tracking
+  - Reasoning analysis
+
+**Privacy Note**: API keys and sensitive environment variables are automatically redacted from CSV logs.
 
 ### Example Output Structure
 ```json
@@ -189,7 +216,13 @@ maxdiff_agents/
 │   ├── maxdiff_engine.py
 │   ├── model_clients.py
 │   ├── reporting.py
+│   ├── logging_utils.py
 │   └── main.py
+├── data/                   # CSV logs (git-ignored)
+│   ├── maxdiff_runs_*.csv
+│   ├── maxdiff_settings_*.csv
+│   ├── maxdiff_item_results_*.csv
+│   └── maxdiff_responses_*.csv
 ├── .env.example
 ├── requirements.txt
 ├── setup.py
