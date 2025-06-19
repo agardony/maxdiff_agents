@@ -334,21 +334,13 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
         std_dev = agreement_data.get('utility_std_dev', 0)
         agreement_rank = next((j + 1 for j, item in enumerate(results.agreement_matrix) if item['item_id'] == item_id), 'N/A')
         
-        # Color coding based on utility score
+        # Color coding based on utility score (primary row color)
         if utility_score > 0.3:
             row_class = "high-score"
         elif utility_score > 0:
             row_class = "medium-score"
         else:
             row_class = "low-score"
-        
-        # Add agreement level indicator to row class
-        if std_dev < 0.1:
-            row_class += " high-agreement"
-        elif std_dev < 0.3:
-            row_class += " medium-agreement"
-        else:
-            row_class += " low-agreement"
             
         # Model scores details
         model_details = ""
