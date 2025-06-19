@@ -374,8 +374,8 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
             
         agreement_rows += f"""
         <tr class="{row_class}">
-            <td class="rank">{consensus_rank}</td>
             <td class="rank">{i + 1}</td>
+            <td class="rank">{consensus_rank}</td>
             <td class="item-name">{item_name}</td>
             <td class="score">{std_dev:.3f}</td>
             <td class="score">{mean_utility:.3f}</td>
@@ -933,14 +933,20 @@ def print_console_summary(session: TaskSession):
     # Item agreement analysis
     console.print("\\n[bold green]Item Agreement Analysis[/bold green]")
     agreement_table = Table()
-    agreement_table.add_column("Rank", width=6)
+    agreement_table.add_column("Agreement Rank", width=12)
+    agreement_table.add_column("Consensus Rank", width=12)
     agreement_table.add_column("Item", min_width=15)
     agreement_table.add_column("Std Dev", width=10)
     agreement_table.add_column("Mean Utility", width=12)
     
+    # Create a mapping from item_id to consensus rank for console output
+    consensus_rank_map = {item_id: i + 1 for i, item_id in enumerate(results.consensus_ranking)}
+    
     for i, item_agreement in enumerate(results.agreement_matrix[:5]):  # Show top 5 most agreed items
+        consensus_rank = consensus_rank_map.get(item_agreement['item_id'], 'N/A')
         agreement_table.add_row(
-            str(i + 1),
+            str(i + 1),  # Agreement rank
+            str(consensus_rank),  # Consensus rank
             item_agreement['item_name'],
             f"{item_agreement['utility_std_dev']:.3f}",
             f"{item_agreement['mean_utility']:.3f}"
