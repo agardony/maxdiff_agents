@@ -88,13 +88,13 @@ REPORT_STYLE=detailed
 source .venv/bin/activate
 
 # Run with default settings
-python run.py
+python max_diff.py
 
 # Run with custom items file
-python run.py --items-file my_items.txt
+python max_diff.py --items-file my_items.txt
 
 # Run with custom environment file
-python run.py --env-file .env.production
+python max_diff.py --env-file .env.production
 ```
 
 ### Input Format
@@ -194,7 +194,7 @@ maxdiff_agents/
 ├── requirements.txt
 ├── setup.py
 ├── setup.cfg
-├── run.py
+├── max_diff.py
 └── sample_items.txt
 ```
 

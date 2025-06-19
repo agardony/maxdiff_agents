@@ -13,7 +13,7 @@ try:
     from .model_clients import OpenAIClient, AnthropicClient, GoogleClient
     from .reporting import generate_report
 except ImportError:
-    # Fallback to absolute imports (when run standalone via run.py)
+    # Fallback to absolute imports (when run standalone via max_diff.py)
     from src.types import MaxDiffItem, EngineConfig, TaskSession, ReportConfig
     from src.maxdiff_engine import MaxDiffEngine
     from src.model_clients import OpenAIClient, AnthropicClient, GoogleClient
