@@ -805,7 +805,7 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
         
         <div class="section">
             <h2>⚡ Major Disagreements</h2>
-            <p>Items with highest utility score variance across AI models (top 3 most controversial):</p>
+            <p>Items with significant disagreement across AI models (statistical outliers using 2-sigma threshold):</p>
             <div class="disagreement-cards">
                 {disagreement_cards}
             </div>
