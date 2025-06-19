@@ -305,33 +305,6 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
     results = aggregate_results(session)
     item_names = {item.id: item.name for item in session.items}
     
-    # Generate consensus ranking table
-    ranking_rows = ""
-    for i, item_id in enumerate(results.consensus_ranking):
-        scores = results.item_scores.get(item_id, {})
-        item_name = item_names.get(item_id, 'Unknown')
-        utility_score = scores.get('utility_score', 0)
-        best_rate = scores.get('best_rate', 0)
-        worst_rate = scores.get('worst_rate', 0)
-        
-        # Color coding based on utility score
-        if utility_score > 0.3:
-            row_class = "high-score"
-        elif utility_score > 0:
-            row_class = "medium-score"
-        else:
-            row_class = "low-score"
-            
-        ranking_rows += f"""
-        <tr class="{row_class}">
-            <td class="rank">{i + 1}</td>
-            <td class="item-name">{item_name}</td>
-            <td class="score">{utility_score:.3f}</td>
-            <td class="rate">{best_rate:.1%}</td>
-            <td class="rate">{worst_rate:.1%}</td>
-        </tr>
-        """
-    
     # Helper function to get provider name from model string
     def get_provider_name(model_name):
         if 'openai' in model_name.lower() or 'gpt' in model_name.lower():
@@ -343,42 +316,57 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
         else:
             return model_name.split('-')[0].capitalize()
     
-    # Create a mapping from item_id to consensus rank
+    # Create a mapping from item_id to consensus rank and agreement data
     consensus_rank_map = {item_id: i + 1 for i, item_id in enumerate(results.consensus_ranking)}
+    agreement_data_map = {item['item_id']: item for item in results.agreement_matrix}
     
-    # Generate item agreement list (sorted by std dev - low std dev = high agreement)
-    agreement_rows = ""
-    for i, item_agreement in enumerate(results.agreement_matrix):  # Show all items
-        item_name = item_agreement['item_name']
-        item_id = item_agreement['item_id']
-        std_dev = item_agreement['utility_std_dev']
-        mean_utility = item_agreement['mean_utility']
-        agreement_score = item_agreement['agreement_score']
+    # Generate combined ranking table (ordered by consensus ranking)
+    combined_rows = ""
+    for i, item_id in enumerate(results.consensus_ranking):
+        scores = results.item_scores.get(item_id, {})
+        item_name = item_names.get(item_id, 'Unknown')
+        utility_score = scores.get('utility_score', 0)
+        best_rate = scores.get('best_rate', 0)
+        worst_rate = scores.get('worst_rate', 0)
         
-        # Get consensus rank for this item
-        consensus_rank = consensus_rank_map.get(item_id, 'N/A')
+        # Get agreement data for this item
+        agreement_data = agreement_data_map.get(item_id, {})
+        std_dev = agreement_data.get('utility_std_dev', 0)
+        agreement_rank = next((j + 1 for j, item in enumerate(results.agreement_matrix) if item['item_id'] == item_id), 'N/A')
         
-        # Color coding based on agreement level (low std dev = high agreement)
-        if std_dev < 0.1:
-            row_class = "high-agreement"
-        elif std_dev < 0.3:
-            row_class = "medium-agreement"
+        # Color coding based on utility score
+        if utility_score > 0.3:
+            row_class = "high-score"
+        elif utility_score > 0:
+            row_class = "medium-score"
         else:
-            row_class = "low-agreement"
+            row_class = "low-score"
+        
+        # Add agreement level indicator to row class
+        if std_dev < 0.1:
+            row_class += " high-agreement"
+        elif std_dev < 0.3:
+            row_class += " medium-agreement"
+        else:
+            row_class += " low-agreement"
             
         # Model scores details
-        model_details = ", ".join([
-            f"{get_provider_name(score['model'])}: {score['utility_score']:.2f}"
-            for score in item_agreement['model_scores']
-        ])
+        model_details = ""
+        if agreement_data and 'model_scores' in agreement_data:
+            model_details = ", ".join([
+                f"{get_provider_name(score['model'])}: {score['utility_score']:.2f}"
+                for score in agreement_data['model_scores']
+            ])
             
-        agreement_rows += f"""
+        combined_rows += f"""
         <tr class="{row_class}">
             <td class="rank">{i + 1}</td>
-            <td class="rank">{consensus_rank}</td>
+            <td class="rank">{agreement_rank}</td>
             <td class="item-name">{item_name}</td>
+            <td class="score">{utility_score:.3f}</td>
+            <td class="rate">{best_rate:.1%}</td>
+            <td class="rate">{worst_rate:.1%}</td>
             <td class="score">{std_dev:.3f}</td>
-            <td class="score">{mean_utility:.3f}</td>
             <td class="model-details">{model_details}</td>
         </tr>
         """
@@ -788,20 +776,30 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
         </div>
         
         <div class="section">
-            <h2>🏆 Consensus Ranking</h2>
-            <p>Items ranked by utility score (best rate - worst rate):</p>
+            <h2>🏆 Combined Rankings & Agreement Analysis</h2>
+            <p><strong>Items ordered by consensus ranking with agreement metrics</strong></p>
+            <p style="margin-top: 10px; color: #666; font-size: 0.9em;">
+                <strong>Consensus Rank:</strong> Overall ranking based on utility scores (best rate - worst rate) • 
+                <strong>Agreement Rank:</strong> How much models agree on this item (lower std dev = higher agreement) • 
+                <strong>Utility Score:</strong> Best selection rate minus worst selection rate • 
+                <strong>Best/Worst Rate:</strong> Percentage of times chosen as best/worst when appearing • 
+                <strong>Std Dev:</strong> Standard deviation of utility scores across models (lower = more agreement)
+            </p>
             <table>
                 <thead>
                     <tr>
-                        <th>Rank</th>
+                        <th>Consensus Rank</th>
+                        <th>Agreement Rank</th>
                         <th>Item</th>
                         <th>Utility Score</th>
                         <th>Best Rate</th>
                         <th>Worst Rate</th>
+                        <th>Std Dev (σ)</th>
+                        <th>Model Scores</th>
                     </tr>
                 </thead>
                 <tbody>
-                    {ranking_rows}
+                    {combined_rows}
                 </tbody>
             </table>
         </div>
@@ -811,26 +809,6 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
             <div class="models-list">
                 {' '.join(f'<span class="model-tag">{get_provider_name(model)}</span>' for model in results.models_used)}
             </div>
-        </div>
-        
-        <div class="section">
-            <h2>🤝 Item Agreement Analysis</h2>
-            <p>Items ranked by agreement level (low standard deviation = high agreement):</p>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Consensus Rank</th>
-                        <th>Agreement Rank</th>
-                        <th>Item</th>
-                        <th>Std Dev (σ)</th>
-                        <th>Mean Utility</th>
-                        <th>Model Scores</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {agreement_rows}
-                </tbody>
-            </table>
         </div>
         
         <div class="section">
@@ -910,49 +888,40 @@ def print_console_summary(session: TaskSession):
     console.print(f"🤖 [bold]Models Used:[/bold] {', '.join(results.models_used)}")
     console.print(f"📝 [bold]Items Evaluated:[/bold] {len(session.items)}\\n")
     
-    # Consensus ranking table
-    ranking_table = Table(title="Consensus Ranking", show_header=True, header_style="bold magenta")
-    ranking_table.add_column("Rank", width=6)
-    ranking_table.add_column("Item", min_width=20)
-    ranking_table.add_column("Utility Score", width=12)
-    ranking_table.add_column("Best Rate", width=10)
-    ranking_table.add_column("Worst Rate", width=10)
+    # Combined ranking and agreement table
+    console.print("\\n[bold green]Combined Rankings & Agreement Analysis[/bold green]")
+    console.print("[dim]Items ordered by consensus ranking with agreement metrics[/dim]")
+    console.print("[dim]Consensus Rank: Overall utility-based ranking • Agreement Rank: Model agreement level • Std Dev: Lower = more agreement[/dim]\\n")
+    
+    combined_table = Table()
+    combined_table.add_column("Consensus Rank", width=12)
+    combined_table.add_column("Agreement Rank", width=12)
+    combined_table.add_column("Item", min_width=20)
+    combined_table.add_column("Utility Score", width=12)
+    combined_table.add_column("Best Rate", width=10)
+    combined_table.add_column("Worst Rate", width=10)
+    combined_table.add_column("Std Dev", width=10)
+    
+    # Create mappings
+    agreement_data_map = {item['item_id']: item for item in results.agreement_matrix}
     
     for i, item_id in enumerate(results.consensus_ranking[:10]):  # Show top 10
         scores = results.item_scores.get(item_id, {})
-        ranking_table.add_row(
-            str(i + 1),
+        agreement_data = agreement_data_map.get(item_id, {})
+        std_dev = agreement_data.get('utility_std_dev', 0)
+        agreement_rank = next((j + 1 for j, item in enumerate(results.agreement_matrix) if item['item_id'] == item_id), 'N/A')
+        
+        combined_table.add_row(
+            str(i + 1),  # Consensus rank
+            str(agreement_rank),  # Agreement rank
             item_names.get(item_id, item_id),
             f"{scores.get('utility_score', 0):.3f}",
             f"{scores.get('best_rate', 0):.3f}",
-            f"{scores.get('worst_rate', 0):.3f}"
+            f"{scores.get('worst_rate', 0):.3f}",
+            f"{std_dev:.3f}"
         )
     
-    console.print(ranking_table)
-    
-    # Item agreement analysis
-    console.print("\\n[bold green]Item Agreement Analysis[/bold green]")
-    agreement_table = Table()
-    agreement_table.add_column("Agreement Rank", width=12)
-    agreement_table.add_column("Consensus Rank", width=12)
-    agreement_table.add_column("Item", min_width=15)
-    agreement_table.add_column("Std Dev", width=10)
-    agreement_table.add_column("Mean Utility", width=12)
-    
-    # Create a mapping from item_id to consensus rank for console output
-    consensus_rank_map = {item_id: i + 1 for i, item_id in enumerate(results.consensus_ranking)}
-    
-    for i, item_agreement in enumerate(results.agreement_matrix[:5]):  # Show top 5 most agreed items
-        consensus_rank = consensus_rank_map.get(item_agreement['item_id'], 'N/A')
-        agreement_table.add_row(
-            str(i + 1),  # Agreement rank
-            str(consensus_rank),  # Consensus rank
-            item_agreement['item_name'],
-            f"{item_agreement['utility_std_dev']:.3f}",
-            f"{item_agreement['mean_utility']:.3f}"
-        )
-    
-    console.print(agreement_table)
+    console.print(combined_table)
     
     # Disagreement summary
     console.print(f"\\n[bold red]Major Disagreements:[/bold red] {len(results.disagreement_points)} items with high utility score variance")
