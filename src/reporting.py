@@ -180,14 +180,18 @@ def calculate_item_scores_by_model(session: TaskSession) -> Dict[str, Dict[str, 
 
 def identify_disagreement_points(session: TaskSession) -> List[Dict[str, Any]]:
     """
-    Identify items with the highest disagreement across models based on utility score standard deviation.
+    Identify items with significant disagreement across models based on utility score standard deviation.
+    Only items with std dev > 0.2 are considered to have meaningful disagreement.
     
     Returns:
-        List of items with highest disagreement, sorted by standard deviation
+        List of items with significant disagreement, sorted by standard deviation
     """
     # Calculate item scores for each model
     model_scores = calculate_item_scores_by_model(session)
     item_names = {item.id: item.name for item in session.items}
+    
+    # Define threshold for significant disagreement
+    DISAGREEMENT_THRESHOLD = 0.2  # Standard deviation threshold
     
     # Calculate standard deviation of utility scores for each item across models
     item_disagreements = []
@@ -215,35 +219,37 @@ def identify_disagreement_points(session: TaskSession) -> List[Dict[str, Any]]:
             std_dev = np.std(utility_scores, ddof=1)  # Sample standard deviation
             mean_utility = np.mean(utility_scores)
             
-            # Find specific examples where this item appeared in trials
-            trial_examples = []
-            for response in session.responses:
-                if not response.success:
-                    continue
-                    
-                trial = next((t for t in session.trials if t.trial_number == response.trial_number), None)
-                if trial and any(t.id == item_id for t in trial.items):
-                    # Check if this item was chosen as best or worst
-                    if response.best_item_id == item_id or response.worst_item_id == item_id:
-                        choice_type = 'best' if response.best_item_id == item_id else 'worst'
-                        trial_examples.append({
-                            'trial_number': response.trial_number,
-                            'model': response.model_name,
-                            'choice_type': choice_type,
-                            'reasoning': response.reasoning,
-                            'trial_items': [t.name for t in trial.items]
-                        })
-            
-            item_disagreements.append({
-                'item_id': item_id,
-                'item_name': item_names.get(item_id, 'Unknown'),
-                'utility_std_dev': std_dev,
-                'mean_utility': mean_utility,
-                'model_scores': model_details,
-                'trial_examples': trial_examples[:3]  # Show up to 3 examples
-            })
+            # Only include items with significant disagreement
+            if std_dev > DISAGREEMENT_THRESHOLD:
+                # Find specific examples where this item appeared in trials
+                trial_examples = []
+                for response in session.responses:
+                    if not response.success:
+                        continue
+                        
+                    trial = next((t for t in session.trials if t.trial_number == response.trial_number), None)
+                    if trial and any(t.id == item_id for t in trial.items):
+                        # Check if this item was chosen as best or worst
+                        if response.best_item_id == item_id or response.worst_item_id == item_id:
+                            choice_type = 'best' if response.best_item_id == item_id else 'worst'
+                            trial_examples.append({
+                                'trial_number': response.trial_number,
+                                'model': response.model_name,
+                                'choice_type': choice_type,
+                                'reasoning': response.reasoning,
+                                'trial_items': [t.name for t in trial.items]
+                            })
+                
+                item_disagreements.append({
+                    'item_id': item_id,
+                    'item_name': item_names.get(item_id, 'Unknown'),
+                    'utility_std_dev': std_dev,
+                    'mean_utility': mean_utility,
+                    'model_scores': model_details,
+                    'trial_examples': trial_examples[:3]  # Show up to 3 examples
+                })
     
-    # Sort by standard deviation (highest first) and return top disagreements
+    # Sort by standard deviation (highest first) and return items with significant disagreement
     item_disagreements.sort(key=lambda x: x['utility_std_dev'], reverse=True)
     
     return item_disagreements
