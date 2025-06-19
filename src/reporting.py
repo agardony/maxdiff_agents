@@ -181,7 +181,7 @@ def calculate_item_scores_by_model(session: TaskSession) -> Dict[str, Dict[str, 
 def identify_disagreement_points(session: TaskSession) -> List[Dict[str, Any]]:
     """
     Identify items with significant disagreement across models based on utility score standard deviation.
-    Only items with std dev > 0.2 are considered to have meaningful disagreement.
+    Uses statistical outlier detection: items with std dev > mean + 2 * std of all std devs.
     
     Returns:
         List of items with significant disagreement, sorted by standard deviation
@@ -190,11 +190,9 @@ def identify_disagreement_points(session: TaskSession) -> List[Dict[str, Any]]:
     model_scores = calculate_item_scores_by_model(session)
     item_names = {item.id: item.name for item in session.items}
     
-    # Define threshold for significant disagreement
-    DISAGREEMENT_THRESHOLD = 0.5  # Standard deviation threshold
-    
-    # Calculate standard deviation of utility scores for each item across models
-    item_disagreements = []
+    # First pass: collect all standard deviations to calculate threshold
+    all_std_devs = []
+    item_data = []  # Store item data for second pass
     
     for item in session.items:
         item_id = item.id
@@ -218,36 +216,59 @@ def identify_disagreement_points(session: TaskSession) -> List[Dict[str, Any]]:
         if len(utility_scores) >= 2:
             std_dev = np.std(utility_scores, ddof=1)  # Sample standard deviation
             mean_utility = np.mean(utility_scores)
+            all_std_devs.append(std_dev)
+            item_data.append({
+                'item_id': item_id,
+                'std_dev': std_dev,
+                'mean_utility': mean_utility,
+                'model_details': model_details
+            })
+    
+    # Calculate statistical threshold: mean + 2 * std of all standard deviations
+    if len(all_std_devs) >= 2:
+        mean_std_dev = np.mean(all_std_devs)
+        std_of_std_devs = np.std(all_std_devs, ddof=1)
+        disagreement_threshold = mean_std_dev + 2 * std_of_std_devs
+    else:
+        # Fallback to a reasonable default if we don't have enough data
+        disagreement_threshold = 0.3
+    
+    # Second pass: identify items that exceed the threshold
+    item_disagreements = []
+    
+    for item_info in item_data:
+        item_id = item_info['item_id']
+        std_dev = item_info['std_dev']
+        
+        # Only include items with significant disagreement (statistical outliers)
+        if std_dev > disagreement_threshold:
+            # Find specific examples where this item appeared in trials
+            trial_examples = []
+            for response in session.responses:
+                if not response.success:
+                    continue
+                    
+                trial = next((t for t in session.trials if t.trial_number == response.trial_number), None)
+                if trial and any(t.id == item_id for t in trial.items):
+                    # Check if this item was chosen as best or worst
+                    if response.best_item_id == item_id or response.worst_item_id == item_id:
+                        choice_type = 'best' if response.best_item_id == item_id else 'worst'
+                        trial_examples.append({
+                            'trial_number': response.trial_number,
+                            'model': response.model_name,
+                            'choice_type': choice_type,
+                            'reasoning': response.reasoning,
+                            'trial_items': [t.name for t in trial.items]
+                        })
             
-            # Only include items with significant disagreement
-            if std_dev > DISAGREEMENT_THRESHOLD:
-                # Find specific examples where this item appeared in trials
-                trial_examples = []
-                for response in session.responses:
-                    if not response.success:
-                        continue
-                        
-                    trial = next((t for t in session.trials if t.trial_number == response.trial_number), None)
-                    if trial and any(t.id == item_id for t in trial.items):
-                        # Check if this item was chosen as best or worst
-                        if response.best_item_id == item_id or response.worst_item_id == item_id:
-                            choice_type = 'best' if response.best_item_id == item_id else 'worst'
-                            trial_examples.append({
-                                'trial_number': response.trial_number,
-                                'model': response.model_name,
-                                'choice_type': choice_type,
-                                'reasoning': response.reasoning,
-                                'trial_items': [t.name for t in trial.items]
-                            })
-                
-                item_disagreements.append({
-                    'item_id': item_id,
-                    'item_name': item_names.get(item_id, 'Unknown'),
-                    'utility_std_dev': std_dev,
-                    'mean_utility': mean_utility,
-                    'model_scores': model_details,
-                    'trial_examples': trial_examples[:3]  # Show up to 3 examples
-                })
+            item_disagreements.append({
+                'item_id': item_id,
+                'item_name': item_names.get(item_id, 'Unknown'),
+                'utility_std_dev': std_dev,
+                'mean_utility': item_info['mean_utility'],
+                'model_scores': item_info['model_details'],
+                'trial_examples': trial_examples[:3]  # Show up to 3 examples
+            })
     
     # Sort by standard deviation (highest first) and return items with significant disagreement
     item_disagreements.sort(key=lambda x: x['utility_std_dev'], reverse=True)
