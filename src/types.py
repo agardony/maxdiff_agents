@@ -59,9 +59,9 @@ class ModelResponse(BaseModel):
 
 class ModelConfig(BaseModel):
     """Configuration for AI model clients."""
-    openai_model: str = "gpt-4"
-    anthropic_model: str = "claude-3-opus-20240229"
-    google_model: str = "gemini-pro"
+    openai_model: str = "gpt-3.5-turbo"
+    anthropic_model: str = "claude-3-haiku-20240307"
+    google_model: str = "gemini-1.5-flash"
     max_concurrent_requests: int = 5
     request_timeout: int = 30
 

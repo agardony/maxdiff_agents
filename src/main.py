@@ -52,21 +52,21 @@ def main(items_file: str, env_file: str):
     # Add OpenAI client if API key is available
     if os.getenv('OPENAI_API_KEY'):
         clients.append(OpenAIClient(
-            model_name=os.getenv('OPENAI_MODEL', 'gpt-4'),
+            model_name=os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo'),
             api_key=os.getenv('OPENAI_API_KEY')
         ))
     
     # Add Anthropic client if API key is available
     if os.getenv('ANTHROPIC_API_KEY'):
         clients.append(AnthropicClient(
-            model_name=os.getenv('ANTHROPIC_MODEL', 'claude-3-opus-20240229'),
+            model_name=os.getenv('ANTHROPIC_MODEL', 'claude-3-haiku-20240307'),
             api_key=os.getenv('ANTHROPIC_API_KEY')
         ))
     
     # Add Google client if API key is available
     if os.getenv('GOOGLE_API_KEY'):
         clients.append(GoogleClient(
-            model_name=os.getenv('GOOGLE_MODEL', 'gemini-pro'),
+            model_name=os.getenv('GOOGLE_MODEL', 'gemini-1.5-flash'),
             api_key=os.getenv('GOOGLE_API_KEY')
         ))
     

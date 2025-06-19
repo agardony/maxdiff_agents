@@ -52,10 +52,15 @@ INSTRUCTION_TEXT=Please choose the item you find BEST and the item you find WORS
 
 ### Model Configuration
 ```bash
-OPENAI_MODEL=gpt-4
-ANTHROPIC_MODEL=claude-3-opus-20240229
-GOOGLE_MODEL=gemini-pro
+OPENAI_MODEL=gpt-3.5-turbo
+ANTHROPIC_MODEL=claude-3-haiku-20240307
+GOOGLE_MODEL=gemini-1.5-flash
 ```
+
+**Note**: Default models are selected for cost-effectiveness. For higher quality responses, consider:
+- `OPENAI_MODEL=gpt-4` or `gpt-4-turbo`
+- `ANTHROPIC_MODEL=claude-3-sonnet-20240229` or `claude-3-opus-20240229`
+- `GOOGLE_MODEL=gemini-pro` or `gemini-1.5-pro`
 
 ### Performance & Output
 ```bash
