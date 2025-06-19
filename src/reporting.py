@@ -318,7 +318,7 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
     
     # Generate item agreement list (sorted by std dev - low std dev = high agreement)
     agreement_rows = ""
-    for i, item_agreement in enumerate(results.agreement_matrix[:10]):  # Show top 10 most agreed upon items
+    for i, item_agreement in enumerate(results.agreement_matrix):  # Show all items
         item_name = item_agreement['item_name']
         std_dev = item_agreement['utility_std_dev']
         mean_utility = item_agreement['mean_utility']
@@ -913,7 +913,7 @@ def print_console_summary(session: TaskSession):
     console.print(agreement_table)
     
     # Disagreement summary
-    console.print(f"\\n[bold red]Major Disagreements:[/bold red] {len(results.disagreement_points)} trials with significant disagreement")
+    console.print(f"\\n[bold red]Major Disagreements:[/bold red] {len(results.disagreement_points)} items with high utility score variance")
 
 
 def generate_report(session: TaskSession, config: ReportConfig):
