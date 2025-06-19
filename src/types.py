@@ -26,6 +26,7 @@ class EngineConfig(BaseModel):
     dimension_positive_label: str = "Best"
     dimension_negative_label: str = "Worst"
     instruction_text: str = "Please choose the item you find BEST and the item you find WORST."
+    persona: str = "You are an expert evaluating these items objectively"
 
 
 class RecordedChoice(BaseModel):

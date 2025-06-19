@@ -33,7 +33,8 @@ def main(items_file: str, env_file: str):
         target_trials=int(os.getenv('TARGET_TRIALS', 20)),
         dimension_positive_label=os.getenv('DIMENSION_POSITIVE_LABEL', 'Best'),
         dimension_negative_label=os.getenv('DIMENSION_NEGATIVE_LABEL', 'Worst'),
-        instruction_text=os.getenv('INSTRUCTION_TEXT', 'Please choose the item you find BEST and the item you find WORST.')
+        instruction_text=os.getenv('INSTRUCTION_TEXT', 'Please choose the item you find BEST and the item you find WORST.'),
+        persona=os.getenv('PERSONA', 'You are an expert evaluating these items objectively')
     )
     
     # Load items

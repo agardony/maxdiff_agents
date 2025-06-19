@@ -48,7 +48,16 @@ TARGET_TRIALS=20            # Total number of trials to run
 DIMENSION_POSITIVE_LABEL=Best
 DIMENSION_NEGATIVE_LABEL=Worst
 INSTRUCTION_TEXT=Please choose the item you find BEST and the item you find WORST.
+PERSONA=You are an expert evaluating these items objectively
 ```
+
+#### Persona Examples
+Customize the AI model's perspective with different personas:
+- `PERSONA=You are an expert marketing product manager`
+- `PERSONA=You are a software engineer evaluating development tools`
+- `PERSONA=You are a UX designer focusing on user experience`
+- `PERSONA=You are a business executive prioritizing strategic initiatives`
+- `PERSONA=You are a customer evaluating products for purchase`
 
 ### Model Configuration
 ```bash

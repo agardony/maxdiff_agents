@@ -32,7 +32,7 @@ class ModelClient(ABC):
         """Create a prompt for the MaxDiff trial."""
         items_list = "\\n".join([f"{i+1}. {item.name}" for i, item in enumerate(trial.items)])
         
-        prompt = f"""You are participating in a MaxDiff (Maximum Difference Scaling) survey. 
+        prompt = f"""{config.persona}. You are participating in a MaxDiff (Maximum Difference Scaling) survey. 
 
 {config.instruction_text}
 
