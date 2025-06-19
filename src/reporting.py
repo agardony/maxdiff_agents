@@ -191,7 +191,7 @@ def identify_disagreement_points(session: TaskSession) -> List[Dict[str, Any]]:
     item_names = {item.id: item.name for item in session.items}
     
     # Define threshold for significant disagreement
-    DISAGREEMENT_THRESHOLD = 0.2  # Standard deviation threshold
+    DISAGREEMENT_THRESHOLD = 0.5  # Standard deviation threshold
     
     # Calculate standard deviation of utility scores for each item across models
     item_disagreements = []
@@ -322,13 +322,20 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
         else:
             return model_name.split('-')[0].capitalize()
     
+    # Create a mapping from item_id to consensus rank
+    consensus_rank_map = {item_id: i + 1 for i, item_id in enumerate(results.consensus_ranking)}
+    
     # Generate item agreement list (sorted by std dev - low std dev = high agreement)
     agreement_rows = ""
     for i, item_agreement in enumerate(results.agreement_matrix):  # Show all items
         item_name = item_agreement['item_name']
+        item_id = item_agreement['item_id']
         std_dev = item_agreement['utility_std_dev']
         mean_utility = item_agreement['mean_utility']
         agreement_score = item_agreement['agreement_score']
+        
+        # Get consensus rank for this item
+        consensus_rank = consensus_rank_map.get(item_id, 'N/A')
         
         # Color coding based on agreement level (low std dev = high agreement)
         if std_dev < 0.1:
@@ -346,6 +353,7 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
             
         agreement_rows += f"""
         <tr class="{row_class}">
+            <td class="rank">{consensus_rank}</td>
             <td class="rank">{i + 1}</td>
             <td class="item-name">{item_name}</td>
             <td class="score">{std_dev:.3f}</td>
@@ -790,7 +798,8 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
             <table>
                 <thead>
                     <tr>
-                        <th>Rank</th>
+                        <th>Consensus Rank</th>
+                        <th>Agreement Rank</th>
                         <th>Item</th>
                         <th>Std Dev (σ)</th>
                         <th>Mean Utility</th>
