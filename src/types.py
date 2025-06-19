@@ -73,7 +73,7 @@ class AggregatedResults(BaseModel):
     models_used: List[str]
     item_scores: Dict[str, Dict[str, float]]  # item_id -> {metric: score}
     consensus_ranking: List[str]  # item_ids in order of preference
-    agreement_matrix: Dict[str, Dict[str, float]]  # model1 -> model2 -> agreement_score
+    agreement_matrix: List[Dict[str, Any]]  # item agreement data sorted by std dev
     disagreement_points: List[Dict[str, Any]]
     
     
