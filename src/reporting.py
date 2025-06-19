@@ -771,11 +771,11 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
             <h2>🏆 Combined Rankings & Agreement Analysis</h2>
             <p><strong>Items ordered by consensus ranking with agreement metrics</strong></p>
             <p style="margin-top: 10px; color: #666; font-size: 0.9em;">
-                <strong>Consensus Rank:</strong> Overall ranking based on utility scores (best rate - worst rate) •<br>
-                <strong>Agreement Rank:</strong> How much models agree on this item (lower std dev = higher agreement) •<br>
-                <strong>Utility Score:</strong> Best selection rate minus worst selection rate •<br>
-                <strong>Best/Worst Rate:</strong> Percentage of times chosen as best/worst when appearing •<br>
-                <strong>Std Dev:</strong> Standard deviation of utility scores across models (lower = more agreement)
+                • <strong>Consensus Rank:</strong> Overall ranking based on utility scores (best rate - worst rate)<br>
+                • <strong>Agreement Rank:</strong> How much models agree on this item (lower std dev = higher agreement)<br>
+                • <strong>Utility Score:</strong> Best selection rate minus worst selection rate<br>
+                • <strong>Best/Worst Rate:</strong> Percentage of times chosen as best/worst when appearing<br>
+                • <strong>Std Dev:</strong> Standard deviation of utility scores across models (lower = more agreement)
             </p>
             <table>
                 <thead>
