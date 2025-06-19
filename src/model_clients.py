@@ -13,7 +13,7 @@ import google.generativeai as genai
 try:
     from .types import MaxDiffItem, TrialSet, ModelResponse, EngineConfig
 except ImportError:
-    from types import MaxDiffItem, TrialSet, ModelResponse, EngineConfig
+    from src.types import MaxDiffItem, TrialSet, ModelResponse, EngineConfig
 
 
 class ModelClient(ABC):

@@ -5,16 +5,19 @@ import os
 import asyncio
 import click
 from dotenv import load_dotenv
+# Import handling for both package and standalone execution
 try:
+    # Try relative imports first (when run as package)
     from .types import MaxDiffItem, EngineConfig, TaskSession, ReportConfig
     from .maxdiff_engine import MaxDiffEngine
     from .model_clients import OpenAIClient, AnthropicClient, GoogleClient
     from .reporting import generate_report
 except ImportError:
-    from types import MaxDiffItem, EngineConfig, TaskSession, ReportConfig
-    from maxdiff_engine import MaxDiffEngine
-    from model_clients import OpenAIClient, AnthropicClient, GoogleClient
-    from reporting import generate_report
+    # Fallback to absolute imports (when run standalone via run.py)
+    from src.types import MaxDiffItem, EngineConfig, TaskSession, ReportConfig
+    from src.maxdiff_engine import MaxDiffEngine
+    from src.model_clients import OpenAIClient, AnthropicClient, GoogleClient
+    from src.reporting import generate_report
 
 
 @click.command()

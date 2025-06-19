@@ -9,7 +9,7 @@ from collections import defaultdict, Counter
 try:
     from .types import TaskSession, ReportConfig, AggregatedResults, ModelResponse
 except ImportError:
-    from types import TaskSession, ReportConfig, AggregatedResults, ModelResponse
+    from src.types import TaskSession, ReportConfig, AggregatedResults, ModelResponse
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text

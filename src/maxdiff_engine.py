@@ -6,7 +6,7 @@ from typing import List, Optional
 try:
     from .types import MaxDiffItem, EngineConfig, TrialSet, RecordedChoice
 except ImportError:
-    from types import MaxDiffItem, EngineConfig, TrialSet, RecordedChoice
+    from src.types import MaxDiffItem, EngineConfig, TrialSet, RecordedChoice
 
 
 class MaxDiffEngine:
