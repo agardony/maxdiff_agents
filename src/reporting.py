@@ -122,62 +122,122 @@ def calculate_model_agreement(session: TaskSession) -> Dict[str, Dict[str, float
     return {k: dict(v) for k, v in agreement_matrix.items()}
 
 
-def identify_disagreement_points(session: TaskSession) -> List[Dict[str, Any]]:
+def calculate_item_scores_by_model(session: TaskSession) -> Dict[str, Dict[str, Dict[str, float]]]:
     """
-    Identify specific trials where models strongly disagreed.
+    Calculate item scores for each model separately.
     
     Returns:
-        List of disagreement points with details
+        Dict mapping model_name -> item_id -> scoring metrics
     """
-    responses_by_trial = defaultdict(list)
+    model_scores = defaultdict(lambda: defaultdict(lambda: {
+        'best_count': 0,
+        'worst_count': 0,
+        'appearance_count': 0,
+        'best_rate': 0.0,
+        'worst_rate': 0.0,
+        'utility_score': 0.0
+    }))
     
+    # Group responses by model
     for response in session.responses:
-        if response.success:
-            responses_by_trial[response.trial_number].append(response)
-    
-    disagreements = []
-    
-    for trial_num, trial_responses in responses_by_trial.items():
-        if len(trial_responses) < 2:
+        if not response.success:
             continue
             
-        # Find the trial details
-        trial = next((t for t in session.trials if t.trial_number == trial_num), None)
+        model_name = response.model_name
+        
+        # Find the trial this response corresponds to
+        trial = next((t for t in session.trials if t.trial_number == response.trial_number), None)
         if not trial:
             continue
-        
-        # Count unique best/worst choices
-        best_choices = Counter(resp.best_item_id for resp in trial_responses)
-        worst_choices = Counter(resp.worst_item_id for resp in trial_responses)
-        
-        # Consider it a disagreement if there's no consensus on best or worst
-        best_consensus = max(best_choices.values()) / len(trial_responses)
-        worst_consensus = max(worst_choices.values()) / len(trial_responses)
-        
-        if best_consensus < 0.67 or worst_consensus < 0.67:  # Less than 2/3 agreement
-            disagreement = {
-                'trial_number': trial_num,
-                'items': [{'id': item.id, 'name': item.name} for item in trial.items],
-                'best_choices': dict(best_choices),
-                'worst_choices': dict(worst_choices),
-                'best_consensus': best_consensus,
-                'worst_consensus': worst_consensus,
-                'responses': [
-                    {
-                        'model': resp.model_name,
-                        'best_item_id': resp.best_item_id,
-                        'worst_item_id': resp.worst_item_id,
-                        'reasoning': resp.reasoning
-                    }
-                    for resp in trial_responses
-                ]
-            }
-            disagreements.append(disagreement)
+            
+        # Count appearances for this model
+        for item in trial.items:
+            model_scores[model_name][item.id]['appearance_count'] += 1
+            
+        # Count best/worst selections for this model
+        model_scores[model_name][response.best_item_id]['best_count'] += 1
+        model_scores[model_name][response.worst_item_id]['worst_count'] += 1
     
-    # Sort by level of disagreement (lowest consensus first)
-    disagreements.sort(key=lambda x: min(x['best_consensus'], x['worst_consensus']))
+    # Calculate derived metrics for each model
+    for model_name, items in model_scores.items():
+        for item_id, scores in items.items():
+            appearances = max(scores['appearance_count'], 1)  # Avoid division by zero
+            scores['best_rate'] = scores['best_count'] / appearances
+            scores['worst_rate'] = scores['worst_count'] / appearances
+            scores['utility_score'] = scores['best_rate'] - scores['worst_rate']
     
-    return disagreements
+    return {k: dict(v) for k, v in model_scores.items()}
+
+
+def identify_disagreement_points(session: TaskSession) -> List[Dict[str, Any]]:
+    """
+    Identify items with the highest disagreement across models based on utility score standard deviation.
+    
+    Returns:
+        List of items with highest disagreement, sorted by standard deviation
+    """
+    # Calculate item scores for each model
+    model_scores = calculate_item_scores_by_model(session)
+    item_names = {item.id: item.name for item in session.items}
+    
+    # Calculate standard deviation of utility scores for each item across models
+    item_disagreements = []
+    
+    for item in session.items:
+        item_id = item.id
+        utility_scores = []
+        model_details = []
+        
+        # Get utility scores for this item from each model
+        for model_name, items in model_scores.items():
+            if item_id in items and items[item_id]['appearance_count'] > 0:
+                utility_score = items[item_id]['utility_score']
+                utility_scores.append(utility_score)
+                model_details.append({
+                    'model': model_name,
+                    'utility_score': utility_score,
+                    'best_rate': items[item_id]['best_rate'],
+                    'worst_rate': items[item_id]['worst_rate'],
+                    'appearances': items[item_id]['appearance_count']
+                })
+        
+        # Calculate standard deviation if we have scores from multiple models
+        if len(utility_scores) >= 2:
+            std_dev = np.std(utility_scores, ddof=1)  # Sample standard deviation
+            mean_utility = np.mean(utility_scores)
+            
+            # Find specific examples where this item appeared in trials
+            trial_examples = []
+            for response in session.responses:
+                if not response.success:
+                    continue
+                    
+                trial = next((t for t in session.trials if t.trial_number == response.trial_number), None)
+                if trial and any(t.id == item_id for t in trial.items):
+                    # Check if this item was chosen as best or worst
+                    if response.best_item_id == item_id or response.worst_item_id == item_id:
+                        choice_type = 'best' if response.best_item_id == item_id else 'worst'
+                        trial_examples.append({
+                            'trial_number': response.trial_number,
+                            'model': response.model_name,
+                            'choice_type': choice_type,
+                            'reasoning': response.reasoning,
+                            'trial_items': [t.name for t in trial.items]
+                        })
+            
+            item_disagreements.append({
+                'item_id': item_id,
+                'item_name': item_names.get(item_id, 'Unknown'),
+                'utility_std_dev': std_dev,
+                'mean_utility': mean_utility,
+                'model_scores': model_details,
+                'trial_examples': trial_examples[:3]  # Show up to 3 examples
+            })
+    
+    # Sort by standard deviation (highest first) and return top disagreements
+    item_disagreements.sort(key=lambda x: x['utility_std_dev'], reverse=True)
+    
+    return item_disagreements
 
 
 def aggregate_results(session: TaskSession) -> AggregatedResults:
@@ -280,30 +340,66 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
         else:
             return model_name.split('-')[0].capitalize()
     
-    # Generate disagreement points section
+    # Generate disagreement points section (items with highest utility score variance)
     disagreement_cards = ""
-    for i, disagreement in enumerate(results.disagreement_points[:5]):  # Show top 5
-        trial_items = ", ".join([item['name'] for item in disagreement['items']])
-        responses_html = ""
-        for resp in disagreement['responses']:
-            model_provider = get_provider_name(resp['model'])
-            best_item = next((item['name'] for item in disagreement['items'] if item['id'] == resp['best_item_id']), 'Unknown')
-            worst_item = next((item['name'] for item in disagreement['items'] if item['id'] == resp['worst_item_id']), 'Unknown')
-            # Don't truncate reasoning - show full text
-            reasoning_text = resp['reasoning'] if resp['reasoning'] else 'No reasoning provided'
-            responses_html += f"""
-            <div class="response-item">
-                <strong>{model_provider}:</strong> Best: {best_item}, Worst: {worst_item}
-                <div class="reasoning">{reasoning_text}</div>
+    for i, disagreement in enumerate(results.disagreement_points[:3]):  # Show top 3
+        item_name = disagreement['item_name']
+        std_dev = disagreement['utility_std_dev']
+        mean_utility = disagreement['mean_utility']
+        
+        # Model scores section
+        model_scores_html = ""
+        for model_score in disagreement['model_scores']:
+            model_provider = get_provider_name(model_score['model'])
+            utility = model_score['utility_score']
+            best_rate = model_score['best_rate']
+            worst_rate = model_score['worst_rate']
+            appearances = model_score['appearances']
+            
+            # Color code based on utility score
+            if utility > 0.3:
+                score_class = "high-score"
+            elif utility > 0:
+                score_class = "medium-score"
+            else:
+                score_class = "low-score"
+                
+            model_scores_html += f"""
+            <div class="model-score-item {score_class}">
+                <strong>{model_provider}:</strong> 
+                Utility: {utility:.3f} (Best: {best_rate:.1%}, Worst: {worst_rate:.1%})
+                <span class="appearances">({appearances} appearances)</span>
             </div>
             """
         
+        # Trial examples section
+        examples_html = ""
+        if disagreement['trial_examples']:
+            examples_html = "<h5>Example Choices:</h5>"
+            for example in disagreement['trial_examples']:
+                model_provider = get_provider_name(example['model'])
+                choice_type = example['choice_type']
+                reasoning = example['reasoning'] if example['reasoning'] else 'No reasoning provided'
+                trial_items = ", ".join(example['trial_items'])
+                
+                choice_class = "best-choice" if choice_type == "best" else "worst-choice"
+                examples_html += f"""
+                <div class="trial-example {choice_class}">
+                    <strong>{model_provider}</strong> chose as <em>{choice_type}</em> in trial with: {trial_items}
+                    <div class="reasoning">{reasoning}</div>
+                </div>
+                """
+        
         disagreement_cards += f"""
         <div class="disagreement-card">
-            <h4>Trial {disagreement['trial_number']}</h4>
-            <p><strong>Items:</strong> {trial_items}</p>
-            <p><strong>Consensus:</strong> Best {disagreement['best_consensus']:.1%}, Worst {disagreement['worst_consensus']:.1%}</p>
-            <div class="responses">{responses_html}</div>
+            <h4>{item_name}</h4>
+            <p><strong>Utility Score Variance:</strong> σ = {std_dev:.3f} (Mean: {mean_utility:.3f})</p>
+            <p>This item shows the {i+1}{'st' if i+1==1 else 'nd' if i+1==2 else 'rd'} highest disagreement across AI models.</p>
+            
+            <h5>Model Scores:</h5>
+            <div class="model-scores">{model_scores_html}</div>
+            
+            {examples_html}
         </div>
         """
     
@@ -537,6 +633,62 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
             font-size: 0.9em;
         }}
         
+        .model-scores {{
+            margin: 15px 0;
+        }}
+        
+        .model-score-item {{
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 5px;
+            border-left: 3px solid #4facfe;
+        }}
+        
+        .model-score-item.high-score {{
+            background: #d4edda;
+            border-left-color: #28a745;
+        }}
+        
+        .model-score-item.medium-score {{
+            background: #fff3cd;
+            border-left-color: #ffc107;
+        }}
+        
+        .model-score-item.low-score {{
+            background: #f8d7da;
+            border-left-color: #dc3545;
+        }}
+        
+        .appearances {{
+            font-size: 0.8em;
+            color: #666;
+            margin-left: 10px;
+        }}
+        
+        .trial-example {{
+            background: #f8f9fa;
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 5px;
+            border-left: 3px solid #6c757d;
+        }}
+        
+        .trial-example.best-choice {{
+            border-left-color: #28a745;
+            background: #d4f6d4;
+        }}
+        
+        .trial-example.worst-choice {{
+            border-left-color: #dc3545;
+            background: #f8d7da;
+        }}
+        
+        .disagreement-card h5 {{
+            margin: 15px 0 10px 0;
+            color: #495057;
+            font-size: 1.1em;
+        }}
+        
         @media (max-width: 768px) {{
             .container {{
                 margin: 10px;
@@ -630,7 +782,7 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
         
         <div class="section">
             <h2>⚡ Major Disagreements</h2>
-            <p>Trials where models had significant disagreements (showing top 5):</p>
+            <p>Items with highest utility score variance across AI models (top 3 most controversial):</p>
             <div class="disagreement-cards">
                 {disagreement_cards}
             </div>
