@@ -28,9 +28,13 @@ class MaxDiffLogger:
         self.data_dir.mkdir(exist_ok=True)
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Define CSV file paths with timestamps
-        self.runs_csv = self.data_dir / f"maxdiff_runs_{self.timestamp}.csv"
-        self.settings_csv = self.data_dir / f"maxdiff_settings_{self.timestamp}.csv"
+        # Create run-specific subdirectory
+        self.run_dir = self.data_dir / f"run_{self.timestamp}"
+        self.run_dir.mkdir(exist_ok=True)
+        
+        # Define CSV file paths within the run subdirectory
+        self.runs_csv = self.run_dir / f"maxdiff_runs_{self.timestamp}.csv"
+        self.settings_csv = self.run_dir / f"maxdiff_settings_{self.timestamp}.csv"
         
         # Sensitive keys that should never be logged
         self.sensitive_keys = {
@@ -130,7 +134,7 @@ class MaxDiffLogger:
     
     def _log_item_results(self, session: TaskSession, results: AggregatedResults) -> None:
         """Log detailed item-level results to a separate CSV."""
-        item_results_csv = self.data_dir / f"maxdiff_item_results_{self.timestamp}.csv"
+        item_results_csv = self.run_dir / f"maxdiff_item_results_{self.timestamp}.csv"
         item_names = {item.id: item.name for item in session.items}
         
         # Create agreement data mapping
@@ -172,7 +176,7 @@ class MaxDiffLogger:
     
     def _log_response_details(self, session: TaskSession) -> None:
         """Log individual response details to CSV."""
-        responses_csv = self.data_dir / f"maxdiff_responses_{self.timestamp}.csv"
+        responses_csv = self.run_dir / f"maxdiff_responses_{self.timestamp}.csv"
         item_names = {item.id: item.name for item in session.items}
         
         for response in session.responses:
@@ -220,8 +224,8 @@ class MaxDiffLogger:
             'run_id': self.timestamp,
             'runs_csv': str(self.runs_csv),
             'settings_csv': str(self.settings_csv),
-            'item_results_csv': str(self.data_dir / f"maxdiff_item_results_{self.timestamp}.csv"),
-            'responses_csv': str(self.data_dir / f"maxdiff_responses_{self.timestamp}.csv")
+            'item_results_csv': str(self.run_dir / f"maxdiff_item_results_{self.timestamp}.csv"),
+            'responses_csv': str(self.run_dir / f"maxdiff_responses_{self.timestamp}.csv")
         }
 
 
