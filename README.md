@@ -2,9 +2,7 @@
 
 A Python project that evaluates MaxDiff tasks using multiple frontier AI models (OpenAI, Anthropic, Google) to understand consensus and disagreement patterns in preference evaluation.
 
-
-https://github.com/user-attachments/assets/ba1109e3-2d9c-4ed4-98cc-63e6b7d0a309
-
+https://github.com/user-attachments/assets/91aeaa4b-ae69-4572-9802-c87b30b4bf24
 
 ## Overview
 
