@@ -157,7 +157,8 @@ def main(items_file: str, env_file: str):
         output_file=os.getenv('REPORT_OUTPUT_FILE', 'report.html')
     )
     
-    generate_report(session, report_config)
+    # Generate report with timestamp matching CSV logging
+    report_file = generate_report(session, report_config, timestamp=logger.timestamp)
     
     # Log comprehensive results to CSV
     results = aggregate_results(session)

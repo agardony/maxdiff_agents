@@ -305,12 +305,15 @@ class TestReportGeneration:
         )
         
         with patch('src.reporting.print_console_summary'):
-            generate_report(sample_task_session, config)
+            result_file = generate_report(sample_task_session, config, timestamp="20240101_120000")
         
-        assert output_file.exists()
+        # File should be created with timestamp
+        expected_file = tmp_path / "test_report_20240101_120000.json"
+        assert expected_file.exists()
+        assert result_file == str(expected_file)
         
         # Verify file contents
-        with open(output_file, 'r') as f:
+        with open(expected_file, 'r') as f:
             report_data = json.load(f)
         
         assert 'summary' in report_data
@@ -325,12 +328,15 @@ class TestReportGeneration:
         )
         
         with patch('src.reporting.print_console_summary'):
-            generate_report(sample_task_session, config)
+            result_file = generate_report(sample_task_session, config, timestamp="20240101_120000")
         
-        assert output_file.exists()
+        # File should be created with timestamp
+        expected_file = tmp_path / "test_report_20240101_120000.html"
+        assert expected_file.exists()
+        assert result_file == str(expected_file)
         
         # Verify file contents
-        with open(output_file, 'r', encoding='utf-8') as f:
+        with open(expected_file, 'r', encoding='utf-8') as f:
             html_content = f.read()
         
         assert '<!DOCTYPE html>' in html_content
@@ -348,12 +354,78 @@ class TestReportGeneration:
         config.output_format = 'pdf'  # Now set to unsupported format
         
         with patch('src.reporting.print_console_summary'):
-            generate_report(sample_task_session, config)
+            result_file = generate_report(sample_task_session, config, timestamp="20240101_120000")
         
         # According to the implementation, it should replace .json with .html in the filename
-        # But since we have .pdf, the implementation will just use the original file (which is a bug)
-        # Let's check if the original PDF file exists since that's what the code actually does
-        assert output_file.exists()
+        # But since we have .pdf, the implementation will create a timestamped html file
+        expected_file = tmp_path / "test_report_20240101_120000.html"
+        assert expected_file.exists()
+        assert result_file == str(expected_file)
+    
+    def test_generate_report_with_timestamp_naming(self, sample_task_session, tmp_path):
+        """Test that report files are generated with timestamp naming."""
+        output_file = tmp_path / "test_report.html"
+        config = ReportConfig(
+            output_format='html',
+            output_file=str(output_file)
+        )
+        
+        timestamp = "20240101_120000"
+        
+        with patch('src.reporting.print_console_summary'):
+            result_file = generate_report(sample_task_session, config, timestamp=timestamp)
+        
+        # Check that the result file has the timestamp in the name
+        expected_file = tmp_path / "test_report_20240101_120000.html"
+        assert expected_file.exists()
+        assert result_file == str(expected_file)
+        
+        # Verify file contents
+        with open(expected_file, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+        
+        assert '<!DOCTYPE html>' in html_content
+        assert 'MaxDiff AI Agents Results' in html_content
+    
+    def test_generate_report_json_with_timestamp_naming(self, sample_task_session, tmp_path):
+        """Test that JSON report files are generated with timestamp naming."""
+        output_file = tmp_path / "test_report.json"
+        config = ReportConfig(
+            output_format='json',
+            output_file=str(output_file)
+        )
+        
+        timestamp = "20240101_120000"
+        
+        with patch('src.reporting.print_console_summary'):
+            result_file = generate_report(sample_task_session, config, timestamp=timestamp)
+        
+        # Check that the result file has the timestamp in the name
+        expected_file = tmp_path / "test_report_20240101_120000.json"
+        assert expected_file.exists()
+        assert result_file == str(expected_file)
+        
+        # Verify file contents
+        with open(expected_file, 'r') as f:
+            report_data = json.load(f)
+        
+        assert 'summary' in report_data
+        assert 'consensus_ranking' in report_data
+    
+    def test_generate_report_default_filename_with_timestamp(self, sample_task_session):
+        """Test default filename generation with timestamp."""
+        config = ReportConfig(
+            output_format='html',
+            output_file=None  # No file specified
+        )
+        
+        timestamp = "20240101_120000"
+        
+        with patch('src.reporting.print_console_summary'):
+            result_file = generate_report(sample_task_session, config, timestamp=timestamp)
+        
+        # When no output file is specified, should return None (prints to console)
+        assert result_file is None
 
 
 class TestEdgeCases:

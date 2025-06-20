@@ -919,34 +919,69 @@ def print_console_summary(session: TaskSession):
     console.print(f"\\n[bold red]Major Disagreements:[/bold red] {len(results.disagreement_points)} items with high utility score variance")
 
 
-def generate_report(session: TaskSession, config: ReportConfig):
+def generate_report(session: TaskSession, config: ReportConfig, timestamp: str = None):
     """
-    Generate and save the final report.
+    Generate and save the final report with timestamp naming.
+    
+    Args:
+        session: TaskSession with results data
+        config: ReportConfig with output preferences 
+        timestamp: Optional timestamp string to use for file naming (format: YYYYMMDD_HHMMSS)
     """
+    from datetime import datetime
+    from pathlib import Path
+    
     # Always print console summary
     print_console_summary(session)
+    
+    # Generate timestamp if not provided
+    if timestamp is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Helper function to generate timestamped filename
+    def get_timestamped_filename(original_filename: str, fmt: str) -> str:
+        if not original_filename:
+            return f"maxdiff_report_{timestamp}.{fmt}"
+        
+        path = Path(original_filename)
+        # Extract base name without extension
+        base_name = path.stem
+        # Use parent directory from original path
+        parent_dir = path.parent
+        
+        # Create timestamped filename
+        timestamped_name = f"{base_name}_{timestamp}.{fmt}"
+        return str(parent_dir / timestamped_name)
     
     if config.output_format == 'html':
         report_content = generate_html_report(session, config)
         if config.output_file:
-            with open(config.output_file, 'w', encoding='utf-8') as f:
+            timestamped_file = get_timestamped_filename(config.output_file, 'html')
+            with open(timestamped_file, 'w', encoding='utf-8') as f:
                 f.write(report_content)
-            print(f"\\n📄 HTML Report saved to: {config.output_file}")
+            print(f"\n📄 HTML Report saved to: {timestamped_file}")
+            return timestamped_file
         else:
-            print("\\n" + report_content)
+            print("\n" + report_content)
+            return None
     elif config.output_format == 'json':
         report_content = generate_json_report(session, config)
         if config.output_file:
-            with open(config.output_file, 'w') as f:
+            timestamped_file = get_timestamped_filename(config.output_file, 'json')
+            with open(timestamped_file, 'w') as f:
                 f.write(report_content)
-            print(f"\\n📄 JSON Report saved to: {config.output_file}")
+            print(f"\n📄 JSON Report saved to: {timestamped_file}")
+            return timestamped_file
         else:
-            print("\\n" + report_content)
+            print("\n" + report_content)
+            return None
     else:
-        print(f"\\nUnsupported output format: {config.output_format}. Using HTML instead.")
+        print(f"\nUnsupported output format: {config.output_format}. Using HTML instead.")
         report_content = generate_html_report(session, config)
         output_file = config.output_file.replace('.json', '.html') if config.output_file else 'report.html'
-        with open(output_file, 'w', encoding='utf-8') as f:
+        timestamped_file = get_timestamped_filename(output_file, 'html')
+        with open(timestamped_file, 'w', encoding='utf-8') as f:
             f.write(report_content)
-        print(f"\\n📄 HTML Report saved to: {output_file}")
+        print(f"\n📄 HTML Report saved to: {timestamped_file}")
+        return timestamped_file
 
