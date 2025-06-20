@@ -170,14 +170,16 @@ class OpenAIClient(ModelClient):
     @retry_with_backoff()
     async def _make_api_call(self, prompt: str) -> str:
         """Make the actual API call with retry logic."""
+        import os
         response = await self.client.chat.completions.create(
             model=self.model_name,
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that responds with JSON."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.1,
-            max_tokens=500
+            temperature=float(os.getenv('LLM_TEMPERATURE', 0.8)),
+            max_tokens=int(os.getenv('LLM_MAX_TOKENS', 100)),
+            top_p=float(os.getenv('LLM_TOP_P', 0.9))
         )
         return response.choices[0].message.content
     
@@ -221,10 +223,12 @@ class AnthropicClient(ModelClient):
     @retry_with_backoff()
     async def _make_api_call(self, prompt: str) -> str:
         """Make the actual API call with retry logic."""
+        import os
         response = await self.client.messages.create(
             model=self.model_name,
-            max_tokens=500,
-            temperature=0.1,
+            max_tokens=int(os.getenv('LLM_MAX_TOKENS', 100)),
+            temperature=float(os.getenv('LLM_TEMPERATURE', 0.8)),
+            top_p=float(os.getenv('LLM_TOP_P', 0.9)),
             messages=[{"role": "user", "content": prompt}]
         )
         return response.content[0].text
@@ -270,6 +274,7 @@ class GoogleClient(ModelClient):
     @retry_with_backoff()
     async def _make_api_call(self, prompt: str) -> str:
         """Make the actual API call with retry logic."""
+        import os
         # Google's API is not async, so we run it in a thread pool
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
@@ -277,8 +282,9 @@ class GoogleClient(ModelClient):
             lambda: self.model.generate_content(
                 prompt,
                 generation_config=genai.types.GenerationConfig(
-                    temperature=0.1,
-                    max_output_tokens=500,
+                    temperature=float(os.getenv('LLM_TEMPERATURE', 0.8)),
+                    max_output_tokens=int(os.getenv('LLM_MAX_TOKENS', 100)),
+                    top_p=float(os.getenv('LLM_TOP_P', 0.9)),
                 )
             )
         )
