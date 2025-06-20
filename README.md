@@ -2,6 +2,10 @@
 
 A Python project that evaluates MaxDiff tasks using multiple frontier AI models (OpenAI, Anthropic, Google) to understand consensus and disagreement patterns in preference evaluation.
 
+
+https://github.com/user-attachments/assets/b09d11fa-c6b8-490d-81d2-a38e04a05a68
+
+
 ## Overview
 
 This project implements a MaxDiff (Maximum Difference Scaling) survey methodology using AI models to evaluate items. It runs trials in parallel across multiple AI providers and provides detailed analysis of consensus rankings and disagreement patterns between models.
