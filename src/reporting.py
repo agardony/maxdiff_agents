@@ -873,17 +873,17 @@ def print_console_summary(session: TaskSession):
     item_names = {item.id: item.name for item in session.items}
     
     # Title
-    console.print("\\n[bold blue]MaxDiff AI Agents Results Summary[/bold blue]\\n")
+    console.print("\n[bold blue]MaxDiff AI Agents Results Summary[/bold blue]\n")
     
     # Basic stats
     console.print(f"📊 [bold]Total Trials:[/bold] {results.total_trials}")
     console.print(f"🤖 [bold]Models Used:[/bold] {', '.join(results.models_used)}")
-    console.print(f"📝 [bold]Items Evaluated:[/bold] {len(session.items)}\\n")
+    console.print(f"📝 [bold]Items Evaluated:[/bold] {len(session.items)}\n")
     
     # Combined ranking and agreement table
-    console.print("\\n[bold green]Combined Rankings & Agreement Analysis[/bold green]")
+    console.print("\n[bold green]Combined Rankings & Agreement Analysis[/bold green]")
     console.print("[dim]Items ordered by consensus ranking with agreement metrics[/dim]")
-    console.print("[dim]Consensus Rank: Overall utility-based ranking • Agreement Rank: Model agreement level • Std Dev: Lower = more agreement[/dim]\\n")
+    console.print("[dim]Consensus Rank: Overall utility-based ranking • Agreement Rank: Model agreement level • Std Dev: Lower = more agreement[/dim]\n")
     
     combined_table = Table()
     combined_table.add_column("Consensus Rank", width=12)
@@ -916,7 +916,7 @@ def print_console_summary(session: TaskSession):
     console.print(combined_table)
     
     # Disagreement summary
-    console.print(f"\\n[bold red]Major Disagreements:[/bold red] {len(results.disagreement_points)} items with high utility score variance")
+    console.print(f"\n[bold red]Major Disagreements:[/bold red] {len(results.disagreement_points)} items with high utility score variance")
 
 
 def generate_report(session: TaskSession, config: ReportConfig, timestamp: str = None):
