@@ -324,31 +324,41 @@ class TestGoogleClient:
     
     @pytest.mark.asyncio
     async def test_google_client_initialization(self):
-        """Test Google client initialization."""
-        with patch('src.model_clients.genai.configure') as mock_configure, \
-             patch('src.model_clients.genai.GenerativeModel') as mock_model:
+        """Test Google client initialization with new SDK."""
+        with patch('src.model_clients.genai.Client') as mock_client_class:
+            
+            mock_client = MagicMock()
+            mock_client_class.return_value = mock_client
             
             client = GoogleClient(model_name="gemini-pro", api_key="test-key")
             assert client.model_name == "gemini-pro"
             assert client.api_key == "test-key"
-            mock_configure.assert_called_once_with(api_key="test-key")
-            mock_model.assert_called_once_with("gemini-pro")
+            mock_client_class.assert_called_once_with(api_key="test-key")
+            assert client.client == mock_client
     
     @pytest.mark.asyncio
     async def test_google_evaluate_trial_success(self, sample_trial, engine_config):
-        """Test successful Google API call with structured output."""
+        """Test successful Google API call with new SDK and direct Pydantic support."""
         from src.model_clients import MaxDiffResponse
         
-        # Mock the JSON response that Gemini would return
-        mock_response = MagicMock()
-        mock_response.text = '{"best_item": 3, "worst_item": 1, "reasoning": "Gemini structured reasoning from native schema support"}'
+        # Mock the Pydantic response that the new SDK should return
+        mock_pydantic_response = MaxDiffResponse(
+            best_item=3,
+            worst_item=1,
+            reasoning="Gemini structured reasoning from new SDK with direct Pydantic support"
+        )
         
-        with patch('src.model_clients.genai.configure'), \
-             patch('src.model_clients.genai.GenerativeModel') as mock_model_class:
+        # Mock the API response with both parsed and text attributes
+        mock_response = MagicMock()
+        mock_response.parsed = mock_pydantic_response
+        mock_response.text = '{"best_item": 3, "worst_item": 1, "reasoning": "Gemini structured reasoning from new SDK with direct Pydantic support"}'
+        
+        with patch('src.model_clients.genai.Client') as mock_client_class:
             
-            mock_model = MagicMock()
-            mock_model.generate_content.return_value = mock_response
-            mock_model_class.return_value = mock_model
+            # Setup mock client and models
+            mock_client = MagicMock()
+            mock_client.models.generate_content.return_value = mock_response
+            mock_client_class.return_value = mock_client
             
             client = GoogleClient(model_name="gemini-pro", api_key="test-key")
             response = await client.evaluate_trial(sample_trial, engine_config)
@@ -360,11 +370,14 @@ class TestGoogleClient:
             assert response.best_item_id == sample_trial.items[2].id
             assert response.worst_item_id == sample_trial.items[0].id
             
-            # Verify that the structured generation config was used
-            call_args = mock_model.generate_content.call_args
-            generation_config = call_args[1]['generation_config']
-            assert generation_config.response_mime_type == "application/json"
-            assert generation_config.response_schema is not None
+            # Verify that the new SDK was used with proper config
+            mock_client.models.generate_content.assert_called_once()
+            call_args = mock_client.models.generate_content.call_args
+            
+            # Check the config parameters
+            config = call_args[1]['config']
+            assert config['response_mime_type'] == "application/json"
+            assert config['response_schema'] == MaxDiffResponse
 
 
 class TestPromptGeneration:

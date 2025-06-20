@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 
 import openai
 import anthropic
-import google.generativeai as genai
+from google import genai
 import instructor
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
@@ -54,60 +54,7 @@ class MaxDiffResponse(BaseModel):
         return self
 
 
-def pydantic_to_gemini_schema(model_class) -> dict:
-    """Convert a Pydantic model to Gemini-compatible JSON schema."""
-    from typing import get_origin, get_args, Union
-    import enum
-    
-    def convert_field_type(field_info):
-        field_type = field_info.annotation
-        
-        # Handle basic types
-        if field_type == str:
-            schema = {"type": "string"}
-        elif field_type == int:
-            schema = {"type": "integer"}
-        elif field_type == float:
-            schema = {"type": "number"}
-        elif field_type == bool:
-            schema = {"type": "boolean"}
-        else:
-            schema = {"type": "string"}  # fallback for complex types
-        
-        # Add Pydantic field constraints from metadata (only supported fields for Gemini)
-        if hasattr(field_info, 'metadata') and field_info.metadata:
-            for constraint in field_info.metadata:
-                # Only add string length constraints, skip numeric constraints for Gemini
-                if field_type == str:
-                    if hasattr(constraint, 'min_length') and constraint.min_length is not None:
-                        schema["minLength"] = constraint.min_length
-                    if hasattr(constraint, 'max_length') and constraint.max_length is not None:
-                        schema["maxLength"] = constraint.max_length
-                # Skip minimum/maximum for integers as Gemini doesn't support them
-        
-        # Add description if available
-        if hasattr(field_info, 'description') and field_info.description:
-            schema["description"] = field_info.description
-        
-        return schema
-    
-    # Build the main schema
-    properties = {}
-    required = []
-    property_ordering = []
-    
-    for field_name, field_info in model_class.model_fields.items():
-        properties[field_name] = convert_field_type(field_info)
-        property_ordering.append(field_name)
-        
-        if field_info.is_required():
-            required.append(field_name)
-    
-    return {
-        "type": "object",
-        "properties": properties,
-        "required": required
-    }
+# Note: pydantic_to_gemini_schema converter removed - new Google GenAI SDK supports Pydantic models directly
 
 
 def retry_with_backoff(config: ModelConfig = None):
@@ -491,12 +438,11 @@ Make sure best_item and worst_item are different numbers."""
 
 
 class GoogleClient(ModelClient):
-    """Client for Google Gemini models."""
+    """Client for Google Gemini models using the new google-genai SDK."""
     
     def __init__(self, model_name: str, api_key: str):
         super().__init__(model_name, api_key)
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(model_name)
+        self.client = genai.Client(api_key=api_key)
     
     def _create_gemini_prompt(self, trial: TrialSet, config: EngineConfig) -> str:
         """Create a simplified prompt for Gemini that relies on response_schema for structure."""
@@ -520,65 +466,48 @@ Make sure best_item and worst_item are different numbers."""
     
     @retry_with_backoff()
     async def _make_api_call_structured(self, prompt: str, trial: TrialSet) -> MaxDiffResponse:
-        """Make the actual API call with retry logic using Gemini's structured output."""
+        """Make the actual API call with retry logic using the new Gemini SDK with direct Pydantic support."""
         import os
         
-        # Convert Pydantic model to Gemini schema
-        gemini_schema = pydantic_to_gemini_schema(MaxDiffResponse)
-        
+        # Use the new Google GenAI SDK with direct Pydantic support
         # Google's API is not async, so we run it in a thread pool
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
-            None, 
-            lambda: self.model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    response_mime_type="application/json",
-                    response_schema=gemini_schema,
-                    temperature=float(os.getenv('LLM_TEMPERATURE', 0.8)),
-                    max_output_tokens=int(os.getenv('LLM_MAX_TOKENS', 500)),
-                    top_p=float(os.getenv('LLM_TOP_P', 0.9)),
-                )
+            None,
+            lambda: self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config={
+                    "response_mime_type": "application/json",
+                    "response_schema": MaxDiffResponse,
+                    "temperature": float(os.getenv('LLM_TEMPERATURE', 0.8)),
+                    "max_output_tokens": int(os.getenv('LLM_MAX_TOKENS', 500)),
+                    "top_p": float(os.getenv('LLM_TOP_P', 0.9)),
+                }
             )
         )
         
-        # Parse the JSON response and validate with Pydantic
-        try:
-            raw_data = json.loads(response.text)
-            pydantic_response = MaxDiffResponse(**raw_data)
-            
-            # Validate item indices are within range
-            if (1 <= pydantic_response.best_item <= len(trial.items) and 
-                1 <= pydantic_response.worst_item <= len(trial.items)):
-                return pydantic_response
-            else:
-                # If indices are out of range, raise an error to trigger fallback
-                raise ValueError(f"Item indices out of range: best={pydantic_response.best_item}, worst={pydantic_response.worst_item}, max={len(trial.items)}")
-                
-        except (json.JSONDecodeError, ValidationError) as e:
-            raise ValueError(f"Failed to parse Gemini structured response: {e}. Raw response: {response.text}")
-    
-    @retry_with_backoff()
-    async def _make_api_call(self, prompt: str) -> str:
-        """Make the actual API call with retry logic (fallback method)."""
-        import os
-        # Google's API is not async, so we run it in a thread pool
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None, 
-            lambda: self.model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=float(os.getenv('LLM_TEMPERATURE', 0.8)),
-                    max_output_tokens=int(os.getenv('LLM_MAX_TOKENS', 500)),
-                    top_p=float(os.getenv('LLM_TOP_P', 0.9)),
-                )
-            )
-        )
-        return response.text
+        # The new SDK should return parsed Pydantic objects directly
+        if hasattr(response, 'parsed') and response.parsed:
+            pydantic_response = response.parsed
+        else:
+            # Fallback to JSON parsing if parsed attribute is not available
+            try:
+                raw_data = json.loads(response.text)
+                pydantic_response = MaxDiffResponse(**raw_data)
+            except (json.JSONDecodeError, ValidationError) as e:
+                raise ValueError(f"Failed to parse Gemini structured response: {e}. Raw response: {response.text}")
+        
+        # Validate item indices are within range
+        if (1 <= pydantic_response.best_item <= len(trial.items) and 
+            1 <= pydantic_response.worst_item <= len(trial.items)):
+            return pydantic_response
+        else:
+            # If indices are out of range, raise an error to trigger fallback
+            raise ValueError(f"Item indices out of range: best={pydantic_response.best_item}, worst={pydantic_response.worst_item}, max={len(trial.items)}")
     
     async def evaluate_trial(self, trial: TrialSet, config: EngineConfig) -> ModelResponse:
-        """Evaluate a trial using Google's Gemini API with native structured output."""
+        """Evaluate a trial using Google's Gemini API with the new SDK and direct Pydantic support."""
         try:
             prompt = self._create_gemini_prompt(trial, config)
             pydantic_response = await self._make_api_call_structured(prompt, trial)
