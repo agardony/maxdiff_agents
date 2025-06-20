@@ -74,17 +74,16 @@ def pydantic_to_gemini_schema(model_class) -> dict:
         else:
             schema = {"type": "string"}  # fallback for complex types
         
-        # Add Pydantic field constraints from metadata
+        # Add Pydantic field constraints from metadata (only supported fields for Gemini)
         if hasattr(field_info, 'metadata') and field_info.metadata:
             for constraint in field_info.metadata:
-                if hasattr(constraint, 'min_length') and constraint.min_length is not None:
-                    schema["minLength"] = constraint.min_length
-                if hasattr(constraint, 'max_length') and constraint.max_length is not None:
-                    schema["maxLength"] = constraint.max_length
-                if hasattr(constraint, 'ge') and constraint.ge is not None:
-                    schema["minimum"] = constraint.ge
-                if hasattr(constraint, 'le') and constraint.le is not None:
-                    schema["maximum"] = constraint.le
+                # Only add string length constraints, skip numeric constraints for Gemini
+                if field_type == str:
+                    if hasattr(constraint, 'min_length') and constraint.min_length is not None:
+                        schema["minLength"] = constraint.min_length
+                    if hasattr(constraint, 'max_length') and constraint.max_length is not None:
+                        schema["maxLength"] = constraint.max_length
+                # Skip minimum/maximum for integers as Gemini doesn't support them
         
         # Add description if available
         if hasattr(field_info, 'description') and field_info.description:
