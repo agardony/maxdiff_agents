@@ -9,14 +9,14 @@ from dotenv import load_dotenv
 # Import handling for both package and standalone execution
 try:
     # Try relative imports first (when run as package)
-    from .types import MaxDiffItem, EngineConfig, TaskSession, ReportConfig
+    from .types import MaxDiffItem, EngineConfig, TaskSession, ReportConfig, ModelConfig
     from .maxdiff_engine import MaxDiffEngine
     from .model_clients import OpenAIClient, AnthropicClient, GoogleClient
     from .reporting import generate_report, aggregate_results
     from .logging_utils import MaxDiffLogger, get_environment_settings
 except ImportError:
     # Fallback to absolute imports (when run standalone via max_diff.py)
-    from src.types import MaxDiffItem, EngineConfig, TaskSession, ReportConfig
+    from src.types import MaxDiffItem, EngineConfig, TaskSession, ReportConfig, ModelConfig
     from src.maxdiff_engine import MaxDiffEngine
     from src.model_clients import OpenAIClient, AnthropicClient, GoogleClient
     from src.reporting import generate_report, aggregate_results
@@ -61,6 +61,16 @@ def main(items_file: str, env_file: str):
     # Initialize the engine
     engine = MaxDiffEngine(items=items, config=config)
     trials = engine.generate_all_trials()
+    
+    # Load model configuration from environment
+    model_config = ModelConfig(
+        max_retries=int(os.getenv('MAX_RETRIES', 3)),
+        retry_base_delay=float(os.getenv('RETRY_BASE_DELAY', 1.0)),
+        retry_max_delay=float(os.getenv('RETRY_MAX_DELAY', 60.0)),
+        request_timeout=int(os.getenv('REQUEST_TIMEOUT', 30))
+    )
+    
+    print(f"📡 Retry configuration: max_retries={model_config.max_retries}, base_delay={model_config.retry_base_delay}s, max_delay={model_config.retry_max_delay}s")
     
     # Initialize AI model clients
     clients = []

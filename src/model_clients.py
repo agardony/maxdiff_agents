@@ -4,16 +4,69 @@ AI model clients for querying different frontier AI models.
 import asyncio
 import json
 import re
-from typing import List, Dict, Any, Optional
+import time
+import random
+from typing import List, Dict, Any, Optional, Callable
 from abc import ABC, abstractmethod
 
 import openai
 import anthropic
 import google.generativeai as genai
 try:
-    from .types import MaxDiffItem, TrialSet, ModelResponse, EngineConfig
+    from .types import MaxDiffItem, TrialSet, ModelResponse, EngineConfig, ModelConfig
 except ImportError:
-    from src.types import MaxDiffItem, TrialSet, ModelResponse, EngineConfig
+    from src.types import MaxDiffItem, TrialSet, ModelResponse, EngineConfig, ModelConfig
+
+
+def retry_with_backoff(config: ModelConfig = None):
+    """Decorator that implements exponential backoff retry logic for async functions."""
+    # Use environment variables as fallback if no config provided
+    import os
+    max_retries = config.max_retries if config else int(os.getenv('MAX_RETRIES', 3))
+    base_delay = config.retry_base_delay if config else float(os.getenv('RETRY_BASE_DELAY', 1.0))
+    max_delay = config.retry_max_delay if config else float(os.getenv('RETRY_MAX_DELAY', 60.0))
+    timeout = config.request_timeout if config else int(os.getenv('REQUEST_TIMEOUT', 30))
+    
+    def decorator(func: Callable):
+        async def wrapper(*args, **kwargs):
+            last_exception = None
+            
+            for attempt in range(max_retries + 1):  # +1 for initial attempt
+                try:
+                    return await asyncio.wait_for(
+                        func(*args, **kwargs),
+                        timeout=float(timeout)
+                    )
+                except (asyncio.TimeoutError, openai.APITimeoutError, 
+                       anthropic.APITimeoutError, Exception) as e:
+                    last_exception = e
+                    
+                    # Check if this is a timeout-related error
+                    is_timeout = (
+                        isinstance(e, asyncio.TimeoutError) or
+                        isinstance(e, openai.APITimeoutError) or
+                        (hasattr(anthropic, 'APITimeoutError') and isinstance(e, anthropic.APITimeoutError)) or
+                        'timeout' in str(e).lower() or
+                        'timed out' in str(e).lower()
+                    )
+                    
+                    # Only retry on timeout errors
+                    if not is_timeout or attempt == max_retries:
+                        break
+                    
+                    # Calculate delay with exponential backoff and jitter
+                    delay = min(base_delay * (2 ** attempt), max_delay)
+                    jitter = random.uniform(0, 0.1 * delay)  # Add up to 10% jitter
+                    total_delay = delay + jitter
+                    
+                    print(f"⏰ Timeout on attempt {attempt + 1}/{max_retries + 1} (Error: {type(e).__name__}), retrying in {total_delay:.2f}s...")
+                    await asyncio.sleep(total_delay)
+            
+            # If we get here, all retries failed
+            raise last_exception
+        
+        return wrapper
+    return decorator
 
 
 class ModelClient(ABC):
@@ -114,22 +167,25 @@ class OpenAIClient(ModelClient):
         super().__init__(model_name, api_key)
         self.client = openai.AsyncOpenAI(api_key=api_key)
     
+    @retry_with_backoff()
+    async def _make_api_call(self, prompt: str) -> str:
+        """Make the actual API call with retry logic."""
+        response = await self.client.chat.completions.create(
+            model=self.model_name,
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that responds with JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=500
+        )
+        return response.choices[0].message.content
+    
     async def evaluate_trial(self, trial: TrialSet, config: EngineConfig) -> ModelResponse:
-        """Evaluate a trial using OpenAI's API."""
+        """Evaluate a trial using OpenAI's API with retry logic."""
         try:
             prompt = self._create_prompt(trial, config)
-            
-            response = await self.client.chat.completions.create(
-                model=self.model_name,
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant that responds with JSON."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1,
-                max_tokens=500
-            )
-            
-            response_text = response.choices[0].message.content
+            response_text = await self._make_api_call(prompt)
             parsed = self._parse_response(response_text, trial)
             
             return ModelResponse(
@@ -162,19 +218,22 @@ class AnthropicClient(ModelClient):
         super().__init__(model_name, api_key)
         self.client = anthropic.AsyncAnthropic(api_key=api_key)
     
+    @retry_with_backoff()
+    async def _make_api_call(self, prompt: str) -> str:
+        """Make the actual API call with retry logic."""
+        response = await self.client.messages.create(
+            model=self.model_name,
+            max_tokens=500,
+            temperature=0.1,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text
+    
     async def evaluate_trial(self, trial: TrialSet, config: EngineConfig) -> ModelResponse:
-        """Evaluate a trial using Anthropic's API."""
+        """Evaluate a trial using Anthropic's API with retry logic."""
         try:
             prompt = self._create_prompt(trial, config)
-            
-            response = await self.client.messages.create(
-                model=self.model_name,
-                max_tokens=500,
-                temperature=0.1,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            
-            response_text = response.content[0].text
+            response_text = await self._make_api_call(prompt)
             parsed = self._parse_response(response_text, trial)
             
             return ModelResponse(
@@ -208,25 +267,28 @@ class GoogleClient(ModelClient):
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel(model_name)
     
-    async def evaluate_trial(self, trial: TrialSet, config: EngineConfig) -> ModelResponse:
-        """Evaluate a trial using Google's Gemini API."""
-        try:
-            prompt = self._create_prompt(trial, config)
-            
-            # Google's API is not async, so we run it in a thread pool
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None, 
-                lambda: self.model.generate_content(
-                    prompt,
-                    generation_config=genai.types.GenerationConfig(
-                        temperature=0.1,
-                        max_output_tokens=500,
-                    )
+    @retry_with_backoff()
+    async def _make_api_call(self, prompt: str) -> str:
+        """Make the actual API call with retry logic."""
+        # Google's API is not async, so we run it in a thread pool
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None, 
+            lambda: self.model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.1,
+                    max_output_tokens=500,
                 )
             )
-            
-            response_text = response.text
+        )
+        return response.text
+    
+    async def evaluate_trial(self, trial: TrialSet, config: EngineConfig) -> ModelResponse:
+        """Evaluate a trial using Google's Gemini API with retry logic."""
+        try:
+            prompt = self._create_prompt(trial, config)
+            response_text = await self._make_api_call(prompt)
             parsed = self._parse_response(response_text, trial)
             
             return ModelResponse(

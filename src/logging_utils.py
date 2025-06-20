@@ -257,6 +257,11 @@ def get_environment_settings() -> Dict[str, Any]:
         'report_style': os.getenv('REPORT_STYLE', 'detailed'),
         'report_output_file': os.getenv('REPORT_OUTPUT_FILE', 'report.html'),
         
+        # Retry Configuration
+        'max_retries': os.getenv('MAX_RETRIES', '3'),
+        'retry_base_delay': os.getenv('RETRY_BASE_DELAY', '1.0'),
+        'retry_max_delay': os.getenv('RETRY_MAX_DELAY', '60.0'),
+        
         # System Information
         'python_version': os.sys.version.split()[0],
         'platform': os.name,

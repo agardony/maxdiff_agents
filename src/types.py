@@ -65,6 +65,9 @@ class ModelConfig(BaseModel):
     google_model: str = "gemini-1.5-flash"
     max_concurrent_requests: int = 5
     request_timeout: int = 30
+    max_retries: int = 3
+    retry_base_delay: float = 1.0  # Base delay in seconds for exponential backoff
+    retry_max_delay: float = 60.0  # Maximum delay between retries
 
 
 class AggregatedResults(BaseModel):
