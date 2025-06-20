@@ -11,8 +11,9 @@ This project implements a MaxDiff (Maximum Difference Scaling) survey methodolog
 - **Multi-Model Support**: OpenAI GPT, Anthropic Claude, and Google Gemini
 - **Async Execution**: Parallel processing of trials across all models
 - **Configurable Parameters**: All MaxDiff settings controllable via `.env` file
-- **Rich Reporting**: Detailed analysis with consensus rankings and disagreement detection
-- **Structured Output**: JSON reports with optional raw response inclusion
+- **Rich Reporting**: HTML reports with consensus rankings and disagreement detection
+- **Comprehensive Testing**: 91 tests covering all core functionality
+- **CSV Data Export**: Timestamped run data organized in subdirectories
 
 ## Installation
 
@@ -75,7 +76,7 @@ GOOGLE_MODEL=gemini-1.5-flash
 ```bash
 MAX_CONCURRENT_REQUESTS=5
 REQUEST_TIMEOUT=30
-OUTPUT_FORMAT=json
+OUTPUT_FORMAT=html
 INCLUDE_RAW_RESPONSES=false
 REPORT_STYLE=detailed
 ```
@@ -115,7 +116,7 @@ The program generates multiple types of output:
 ### 1. Console Summary
 Rich terminal output with tables showing rankings and agreement analysis.
 
-### 2. HTML/JSON Reports
+### 2. HTML Reports
 Detailed structured output including:
 - Consensus ranking with utility scores
 - Item-level metrics (best/worst rates, net scores)
@@ -147,28 +148,31 @@ Automatic timestamped CSV files saved to the `data/` directory:
 
 **Privacy Note**: API keys and sensitive environment variables are automatically redacted from CSV logs.
 
-### Example Output Structure
-```json
-{
-  "summary": {
-    "total_trials": 20,
-    "models_used": ["openai-gpt-4", "anthropic-claude-3-opus-20240229"],
-    "items_evaluated": 15
-  },
-  "consensus_ranking": [
-    {
-      "rank": 1,
-      "item_name": "Security",
-      "utility_score": 0.425
-    }
-  ],
-  "model_agreement": {
-    "openai-gpt-4": {
-      "anthropic-claude-3-opus-20240229": 0.65
-    }
-  }
-}
+## Testing
+
+The project includes a comprehensive test suite with 91 tests covering all core functionality:
+
+```bash
+# Run all tests
+python run_tests.py
+
+# Run tests with pytest directly
+uv run python -m pytest tests/ -v
+
+# Run specific test files
+uv run python -m pytest tests/test_types.py -v
 ```
+
+### Test Coverage
+- **Data types and validation** (Pydantic models)
+- **MaxDiff engine** (trial generation, choice recording)
+- **Model clients** (API interactions, retry logic, response parsing)
+- **Reporting** (score calculation, HTML generation)
+- **Logging utilities** (CSV output, run organization)
+- **Error handling** and edge cases
+- **Security** (API key redaction)
+
+See [`tests/README.md`](tests/README.md) for detailed testing documentation.
 
 ## Architecture
 
@@ -235,7 +239,7 @@ maxdiff_agents/
 
 - **Add new AI providers**: Implement `ModelClient` interface
 - **Custom analysis**: Extend reporting functions
-- **Output formats**: Add HTML/Markdown generators
+- **Output formats**: Add Markdown/PDF generators
 - **Advanced sampling**: Modify trial generation in engine
 
 ## Troubleshooting
