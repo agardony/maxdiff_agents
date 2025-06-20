@@ -107,8 +107,7 @@ def pydantic_to_gemini_schema(model_class) -> dict:
     return {
         "type": "object",
         "properties": properties,
-        "required": required,
-        "propertyOrdering": property_ordering
+        "required": required
     }
 
 
@@ -347,7 +346,7 @@ class OpenAIClient(ModelClient):
             ],
             response_format=MaxDiffResponse,
             temperature=float(os.getenv('LLM_TEMPERATURE', 0.8)),
-            max_tokens=int(os.getenv('LLM_MAX_TOKENS', 150)),
+            max_tokens=int(os.getenv('LLM_MAX_TOKENS', 500)),
             top_p=float(os.getenv('LLM_TOP_P', 0.9))
         )
         
@@ -432,7 +431,7 @@ Make sure best_item and worst_item are different numbers."""
         
         response = await self.client.messages.create(
             model=self.model_name,
-            max_tokens=int(os.getenv('LLM_MAX_TOKENS', 150)),
+            max_tokens=int(os.getenv('LLM_MAX_TOKENS', 500)),
             temperature=float(os.getenv('LLM_TEMPERATURE', 0.8)),
             top_p=float(os.getenv('LLM_TOP_P', 0.9)),
             messages=[{"role": "user", "content": prompt}],
@@ -453,7 +452,7 @@ Make sure best_item and worst_item are different numbers."""
         import os
         response = await self.base_client.messages.create(
             model=self.model_name,
-            max_tokens=int(os.getenv('LLM_MAX_TOKENS', 100)),
+            max_tokens=int(os.getenv('LLM_MAX_TOKENS', 500)),
             temperature=float(os.getenv('LLM_TEMPERATURE', 0.8)),
             top_p=float(os.getenv('LLM_TOP_P', 0.9)),
             messages=[{"role": "user", "content": prompt}]
@@ -538,7 +537,7 @@ Make sure best_item and worst_item are different numbers."""
                     response_mime_type="application/json",
                     response_schema=gemini_schema,
                     temperature=float(os.getenv('LLM_TEMPERATURE', 0.8)),
-                    max_output_tokens=int(os.getenv('LLM_MAX_TOKENS', 150)),
+                    max_output_tokens=int(os.getenv('LLM_MAX_TOKENS', 500)),
                     top_p=float(os.getenv('LLM_TOP_P', 0.9)),
                 )
             )
@@ -572,7 +571,7 @@ Make sure best_item and worst_item are different numbers."""
                 prompt,
                 generation_config=genai.types.GenerationConfig(
                     temperature=float(os.getenv('LLM_TEMPERATURE', 0.8)),
-                    max_output_tokens=int(os.getenv('LLM_MAX_TOKENS', 100)),
+                    max_output_tokens=int(os.getenv('LLM_MAX_TOKENS', 500)),
                     top_p=float(os.getenv('LLM_TOP_P', 0.9)),
                 )
             )
