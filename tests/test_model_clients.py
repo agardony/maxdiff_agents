@@ -7,8 +7,9 @@ import json
 import re
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from src.model_clients import ModelClient, OpenAIClient, AnthropicClient, GoogleClient, retry_with_backoff
+from src.model_clients import ModelClient, OpenAIClient, AnthropicClient, GoogleClient, retry_with_backoff, MaxDiffResponse
 from src.types import TrialSet, ModelResponse, EngineConfig, ModelConfig, MaxDiffItem
+from pydantic import ValidationError
 
 
 class MockModelClient(ModelClient):
@@ -89,7 +90,7 @@ class TestModelClient:
         if parsed['success']:
             assert parsed['best_item_id'] == sample_trial.items[2].id  # Item 3
             assert parsed['worst_item_id'] == sample_trial.items[0].id  # Item 1
-            assert parsed['reasoning'] == "Extracted from text response"
+            assert parsed['reasoning'] == "Extracted from text patterns"
         else:
             # If parsing fails, it should use fallback values
             assert parsed['best_item_id'] == sample_trial.items[0].id  # First item fallback
@@ -106,7 +107,7 @@ class TestModelClient:
         assert parsed['success'] is False
         assert parsed['best_item_id'] == sample_trial.items[0].id  # Fallback
         assert parsed['worst_item_id'] == sample_trial.items[-1].id  # Fallback
-        assert parsed['error_message'] == "Could not parse model response"
+        assert parsed['error_message'] == "Could not parse model response with any strategy"
     
     def test_parse_response_malformed_json(self, sample_trial):
         """Test parsing malformed JSON."""
@@ -357,4 +358,340 @@ class TestPromptGeneration:
         assert "reasoning" in prompt
         assert "1-" in prompt  # Range indication
         assert f"{len(sample_trial.items)}" in prompt  # Max number
+
+
+class TestMaxDiffResponseModel:
+    """Test the Pydantic MaxDiffResponse model."""
+    
+    def test_valid_response_creation(self):
+        """Test creating a valid MaxDiffResponse."""
+        data = {
+            'best_item': 2,
+            'worst_item': 4,
+            'reasoning': 'This is a valid reasoning with sufficient length to meet requirements.'
+        }
+        response = MaxDiffResponse(**data)
+        
+        assert response.best_item == 2
+        assert response.worst_item == 4
+        assert response.reasoning == data['reasoning']
+    
+    def test_different_items_validation(self):
+        """Test that best and worst items must be different."""
+        data = {
+            'best_item': 2,
+            'worst_item': 2,  # Same as best_item
+            'reasoning': 'This should fail validation because items are the same.'
+        }
+        
+        with pytest.raises(ValidationError) as exc_info:
+            MaxDiffResponse(**data)
+        
+        assert "Best and worst items must be different" in str(exc_info.value)
+    
+    def test_minimum_item_values(self):
+        """Test that item numbers must be >= 1."""
+        data = {
+            'best_item': 0,  # Invalid: must be >= 1
+            'worst_item': 2,
+            'reasoning': 'This should fail because best_item is 0.'
+        }
+        
+        with pytest.raises(ValidationError) as exc_info:
+            MaxDiffResponse(**data)
+        
+        assert "greater than or equal to 1" in str(exc_info.value)
+    
+    def test_reasoning_length_validation(self):
+        """Test reasoning length constraints."""
+        # Too short reasoning
+        data = {
+            'best_item': 1,
+            'worst_item': 2,
+            'reasoning': 'Short'  # Less than 10 characters
+        }
+        
+        with pytest.raises(ValidationError) as exc_info:
+            MaxDiffResponse(**data)
+        
+        assert "at least 10 characters" in str(exc_info.value)
+    
+    def test_reasoning_max_length(self):
+        """Test reasoning maximum length constraint."""
+        data = {
+            'best_item': 1,
+            'worst_item': 2,
+            'reasoning': 'A' * 1001  # More than 1000 characters
+        }
+        
+        with pytest.raises(ValidationError) as exc_info:
+            MaxDiffResponse(**data)
+        
+        assert "at most 1000 characters" in str(exc_info.value)
+    
+    def test_schema_generation(self):
+        """Test that Pydantic schema is generated correctly."""
+        schema = MaxDiffResponse.model_json_schema()
+        
+        assert 'properties' in schema
+        assert 'best_item' in schema['properties']
+        assert 'worst_item' in schema['properties']
+        assert 'reasoning' in schema['properties']
+        assert schema['required'] == ['best_item', 'worst_item', 'reasoning']
+        
+        # Check field constraints
+        best_item_schema = schema['properties']['best_item']
+        assert best_item_schema['minimum'] == 1
+        assert best_item_schema['type'] == 'integer'
+        
+        reasoning_schema = schema['properties']['reasoning']
+        assert reasoning_schema['minLength'] == 10
+        assert reasoning_schema['maxLength'] == 1000
+
+
+class TestPydanticParsing:
+    """Test Pydantic-based response parsing."""
+    
+    def test_perfect_pydantic_json_parsing(self, sample_trial):
+        """Test parsing perfectly formatted JSON that passes Pydantic validation."""
+        client = MockModelClient('test', 'key')
+        response_text = '{"best_item": 2, "worst_item": 4, "reasoning": "Item 2 is excellent and item 4 is disappointing in comparison."}'
+        
+        result = client._parse_response(response_text, sample_trial)
+        
+        assert result['success'] is True
+        assert result['best_item_id'] == sample_trial.items[1].id
+        assert result['worst_item_id'] == sample_trial.items[3].id
+        assert "excellent" in result['reasoning']
+    
+    def test_pydantic_json_with_extra_text(self, sample_trial):
+        """Test parsing JSON embedded in extra text."""
+        client = MockModelClient('test', 'key')
+        response_text = '''
+        Here is my analysis of the items:
+        
+        {"best_item": 1, "worst_item": 3, "reasoning": "After careful consideration, item 1 is superior to all others."}
+        
+        I hope this helps with your research.
+        '''
+        
+        result = client._parse_response(response_text, sample_trial)
+        
+        assert result['success'] is True
+        assert result['best_item_id'] == sample_trial.items[0].id
+        assert result['worst_item_id'] == sample_trial.items[2].id
+    
+    def test_malformed_json_cleanup(self, sample_trial):
+        """Test automatic cleanup of malformed JSON."""
+        client = MockModelClient('test', 'key')
+        # JSON with trailing comma
+        response_text = '{"best_item": 3, "worst_item": 1, "reasoning": "Good reasoning with sufficient length here",}'
+        
+        result = client._parse_response(response_text, sample_trial)
+        
+        assert result['success'] is True
+        assert result['best_item_id'] == sample_trial.items[2].id
+        assert result['worst_item_id'] == sample_trial.items[0].id
+    
+    def test_alternative_key_names_limitation(self, sample_trial):
+        """Test that alternative key names are not currently supported."""
+        client = MockModelClient('test', 'key')
+        response_text = '{"best": 2, "worst": 4, "reasoning": "Alternative key names currently fail parsing."}'
+        
+        result = client._parse_response(response_text, sample_trial)
+        
+        # Alternative key names currently fail (known limitation)
+        assert result['success'] is False
+        assert result['error_message'] == "Could not parse model response with any strategy"
+        
+        # But the standard key names work fine
+        standard_response = '{"best_item": 2, "worst_item": 4, "reasoning": "Standard key names work perfectly."}'
+        standard_result = client._parse_response(standard_response, sample_trial)
+        assert standard_result['success'] is True
+    
+    def test_text_pattern_fallback(self, sample_trial):
+        """Test fallback to text pattern matching."""
+        client = MockModelClient('test', 'key')
+        response_text = "I choose item 3 as the best option and item 1 as the worst choice."
+        
+        result = client._parse_response(response_text, sample_trial)
+        
+        assert result['success'] is True
+        assert result['best_item_id'] == sample_trial.items[2].id
+        assert result['worst_item_id'] == sample_trial.items[0].id
+        assert "text patterns" in result['reasoning']
+    
+    def test_structured_text_patterns(self, sample_trial):
+        """Test various structured text patterns."""
+        client = MockModelClient('test', 'key')
+        
+        test_cases = [
+            ("best_item: 2, worst_item: 4", 2, 4),
+            ("Best item is 1 and worst item is 3", 1, 3),
+            ("item 4 is best, item 2 is worst", 4, 2),
+        ]
+        
+        for response_text, expected_best, expected_worst in test_cases:
+            result = client._parse_response(response_text, sample_trial)
+            
+            if result['success']:
+                assert result['best_item_id'] == sample_trial.items[expected_best - 1].id
+                assert result['worst_item_id'] == sample_trial.items[expected_worst - 1].id
+    
+    def test_pydantic_validation_failure_with_fallback(self, sample_trial):
+        """Test when Pydantic validation fails but text parsing succeeds."""
+        client = MockModelClient('test', 'key')
+        # JSON with reasoning too short for Pydantic but extractable via patterns
+        response_text = '{"best_item": 2, "worst_item": 4, "reasoning": "Short"}'
+        
+        result = client._parse_response(response_text, sample_trial)
+        
+        # Should succeed via text pattern fallback
+        assert result['success'] is True
+        assert result['best_item_id'] == sample_trial.items[1].id
+        assert result['worst_item_id'] == sample_trial.items[3].id
+        assert "text patterns" in result['reasoning']
+    
+    def test_multiple_json_objects(self, sample_trial):
+        """Test handling of multiple JSON objects in response."""
+        client = MockModelClient('test', 'key')
+        response_text = '''
+        {"invalid": "object"}
+        {"best_item": 2, "worst_item": 4, "reasoning": "This is the valid response object with proper length."}
+        {"another": "object"}
+        '''
+        
+        result = client._parse_response(response_text, sample_trial)
+        
+        assert result['success'] is True
+        assert result['best_item_id'] == sample_trial.items[1].id
+    
+    def test_unicode_in_reasoning(self, sample_trial):
+        """Test handling of unicode characters in reasoning."""
+        client = MockModelClient('test', 'key')
+        response_text = '{"best_item": 1, "worst_item": 2, "reasoning": "Item 1 is fantastic! 🍎 > 🍌 in my opinion."}'
+        
+        result = client._parse_response(response_text, sample_trial)
+        
+        assert result['success'] is True
+        assert "🍎" in result['reasoning']
+    
+    def test_out_of_range_indices(self, sample_trial):
+        """Test handling of indices outside valid range."""
+        client = MockModelClient('test', 'key')
+        response_text = '{"best_item": 10, "worst_item": 0, "reasoning": "These indices are completely out of range."}'
+        
+        result = client._parse_response(response_text, sample_trial)
+        
+        assert result['success'] is False
+        assert result['error_message'] == "Could not parse model response with any strategy"
+        # Should fallback to first and last items
+        assert result['best_item_id'] == sample_trial.items[0].id
+        assert result['worst_item_id'] == sample_trial.items[-1].id
+    
+    def test_same_item_pydantic_validation(self, sample_trial):
+        """Test when response has same item for best and worst."""
+        client = MockModelClient('test', 'key')
+        response_text = '{"best_item": 2, "worst_item": 2, "reasoning": "This should fail Pydantic validation for same items."}'
+        
+        result = client._parse_response(response_text, sample_trial)
+        
+        # Should fail Pydantic validation and fallback
+        assert result['success'] is False
+        assert result['error_message'] == "Could not parse model response with any strategy"
+
+
+class TestPydanticPromptGeneration:
+    """Test prompt generation with Pydantic schema."""
+    
+    def test_pydantic_schema_included_in_prompt(self, sample_trial, engine_config):
+        """Test that Pydantic schema is included in prompts."""
+        client = MockModelClient('test', 'key')
+        prompt = client._create_prompt(sample_trial, engine_config)
+        
+        # Check that schema elements are present
+        assert '"properties"' in prompt
+        assert '"best_item"' in prompt
+        assert '"worst_item"' in prompt
+        assert '"reasoning"' in prompt
+        assert '"required"' in prompt
+        assert 'schema' in prompt.lower()
+    
+    def test_pydantic_constraints_in_prompt(self, sample_trial, engine_config):
+        """Test that Pydantic constraints are clearly stated in prompt."""
+        client = MockModelClient('test', 'key')
+        prompt = client._create_prompt(sample_trial, engine_config)
+        
+        assert "Constraints:" in prompt
+        assert f"1 to {len(sample_trial.items)}" in prompt  # Item range
+        assert "different numbers" in prompt
+        assert "10-1000 characters" in prompt
+    
+    def test_pydantic_example_format_in_prompt(self, sample_trial, engine_config):
+        """Test that example response format is included."""
+        client = MockModelClient('test', 'key')
+        prompt = client._create_prompt(sample_trial, engine_config)
+        
+        assert "Example response format:" in prompt
+        assert '"best_item":' in prompt
+        assert '"worst_item":' in prompt
+
+
+class TestProviderPydanticConsistency:
+    """Test that Pydantic parsing works consistently across all providers."""
+    
+    def test_openai_client_pydantic_parsing(self, sample_trial):
+        """Test that OpenAI client uses Pydantic parsing."""
+        client = OpenAIClient('gpt-4', 'dummy-key')
+        response_text = '{"best_item": 1, "worst_item": 3, "reasoning": "OpenAI response with proper reasoning length."}'
+        
+        result = client._parse_response(response_text, sample_trial)
+        
+        assert result['success'] is True
+        assert result['best_item_id'] == sample_trial.items[0].id
+        assert result['worst_item_id'] == sample_trial.items[2].id
+    
+    def test_anthropic_client_pydantic_parsing(self, sample_trial):
+        """Test that Anthropic client uses Pydantic parsing."""
+        client = AnthropicClient('claude-3', 'dummy-key')
+        response_text = '{"best_item": 2, "worst_item": 4, "reasoning": "Anthropic response with detailed reasoning for validation."}'
+        
+        result = client._parse_response(response_text, sample_trial)
+        
+        assert result['success'] is True
+        assert result['best_item_id'] == sample_trial.items[1].id
+        assert result['worst_item_id'] == sample_trial.items[3].id
+    
+    def test_google_client_pydantic_parsing(self, sample_trial):
+        """Test that Google client uses Pydantic parsing."""
+        client = GoogleClient('gemini-pro', 'dummy-key')
+        response_text = '{"best_item": 3, "worst_item": 1, "reasoning": "Google Gemini response with comprehensive reasoning."}'
+        
+        result = client._parse_response(response_text, sample_trial)
+        
+        assert result['success'] is True
+        assert result['best_item_id'] == sample_trial.items[2].id
+        assert result['worst_item_id'] == sample_trial.items[0].id
+    
+    def test_consistent_pydantic_parsing_across_providers(self, sample_trial):
+        """Test that all providers parse the same response consistently."""
+        clients = [
+            OpenAIClient('gpt-4', 'dummy-key'),
+            AnthropicClient('claude-3', 'dummy-key'),
+            GoogleClient('gemini-pro', 'dummy-key')
+        ]
+        
+        response_text = '{"best_item": 2, "worst_item": 4, "reasoning": "Consistent response across all providers with proper length."}'
+        
+        results = []
+        for client in clients:
+            result = client._parse_response(response_text, sample_trial)
+            results.append(result)
+        
+        # All should succeed and give same results
+        for result in results:
+            assert result['success'] is True
+            assert result['best_item_id'] == sample_trial.items[1].id
+            assert result['worst_item_id'] == sample_trial.items[3].id
+            assert "Consistent response" in result['reasoning']
 

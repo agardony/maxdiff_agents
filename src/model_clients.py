@@ -12,10 +12,45 @@ from abc import ABC, abstractmethod
 import openai
 import anthropic
 import google.generativeai as genai
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+
 try:
     from .types import MaxDiffItem, TrialSet, ModelResponse, EngineConfig, ModelConfig
 except ImportError:
     from src.types import MaxDiffItem, TrialSet, ModelResponse, EngineConfig, ModelConfig
+
+
+class MaxDiffResponse(BaseModel):
+    """Pydantic model for structured MaxDiff responses from LLMs."""
+    best_item: int = Field(
+        ..., 
+        ge=1, 
+        description="The number (1-based index) of the item you find best/most preferred"
+    )
+    worst_item: int = Field(
+        ..., 
+        ge=1, 
+        description="The number (1-based index) of the item you find worst/least preferred"
+    )
+    reasoning: str = Field(
+        ..., 
+        min_length=10,
+        max_length=1000,
+        description="A brief explanation of your choices"
+    )
+    
+    @field_validator('best_item', 'worst_item')
+    @classmethod
+    def validate_item_numbers(cls, v):
+        if v < 1:
+            raise ValueError('Item numbers must be 1 or greater')
+        return v
+    
+    @model_validator(mode='after')
+    def validate_different_items(self):
+        if self.best_item == self.worst_item:
+            raise ValueError('Best and worst items must be different')
+        return self
 
 
 def retry_with_backoff(config: ModelConfig = None):
@@ -82,8 +117,11 @@ class ModelClient(ABC):
         pass
     
     def _create_prompt(self, trial: TrialSet, config: EngineConfig) -> str:
-        """Create a prompt for the MaxDiff trial."""
+        """Create a prompt for the MaxDiff trial with Pydantic schema."""
         items_list = "\\n".join([f"{i+1}. {item.name}" for i, item in enumerate(trial.items)])
+        
+        # Get the Pydantic schema for structured responses
+        schema = MaxDiffResponse.model_json_schema()
         
         prompt = f"""{config.persona}. You are participating in a MaxDiff (Maximum Difference Scaling) survey. 
 
@@ -92,16 +130,20 @@ class ModelClient(ABC):
 Here are the items to evaluate:
 {items_list}
 
-Please respond with a JSON object containing:
-1. "best_item": The number (1-{len(trial.items)}) of the item you find {config.dimension_positive_label.lower()}
-2. "worst_item": The number (1-{len(trial.items)}) of the item you find {config.dimension_negative_label.lower()}  
-3. "reasoning": A brief explanation of your choices
+IMPORTANT: You must respond with valid JSON that exactly matches this schema:
+{json.dumps(schema, indent=2)}
+
+Constraints:
+- best_item: Must be a number from 1 to {len(trial.items)} representing the {config.dimension_positive_label.lower()} item
+- worst_item: Must be a number from 1 to {len(trial.items)} representing the {config.dimension_negative_label.lower()} item
+- best_item and worst_item must be different numbers
+- reasoning: Must be 10-1000 characters explaining your choices
 
 Example response format:
 {{
     "best_item": 2,
     "worst_item": 4,
-    "reasoning": "I chose item 2 as best because... and item 4 as worst because..."
+    "reasoning": "I chose item 2 as best because its flavor profile is most appealing to me, while item 4 is worst because I find it too intense for my preferences."
 }}
 
 Respond only with the JSON object, no additional text."""
@@ -109,45 +151,93 @@ Respond only with the JSON object, no additional text."""
         return prompt
     
     def _parse_response(self, response_text: str, trial: TrialSet) -> Dict[str, Any]:
-        """Parse the model response to extract best and worst item choices."""
+        """Parse the model response using Pydantic for structured validation."""
         try:
-            # Try to extract JSON from the response
-            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-            if json_match:
-                json_str = json_match.group()
-                parsed = json.loads(json_str)
-                
-                best_idx = int(parsed.get('best_item', 0)) - 1
-                worst_idx = int(parsed.get('worst_item', 0)) - 1
-                
-                if 0 <= best_idx < len(trial.items) and 0 <= worst_idx < len(trial.items):
-                    return {
-                        'best_item_id': trial.items[best_idx].id,
-                        'worst_item_id': trial.items[worst_idx].id,
-                        'reasoning': parsed.get('reasoning', ''),
-                        'success': True
-                    }
+            # Strategy 1: Try to extract and parse JSON using Pydantic
+            json_patterns = [
+                r'\{[^{}]*"best_item"[^{}]*"worst_item"[^{}]*\}',  # Specific pattern
+                r'\{.*?"best_item".*?"worst_item".*?\}',  # Flexible pattern
+                r'\{.*\}',  # Broad pattern
+            ]
             
-            # Fallback: try to extract numbers from text
-            numbers = re.findall(r'\\b([1-9]\\d*)\\b', response_text)
-            if len(numbers) >= 2:
-                best_idx = int(numbers[0]) - 1
-                worst_idx = int(numbers[1]) - 1
-                
-                if 0 <= best_idx < len(trial.items) and 0 <= worst_idx < len(trial.items):
-                    return {
-                        'best_item_id': trial.items[best_idx].id,
-                        'worst_item_id': trial.items[worst_idx].id,
-                        'reasoning': 'Extracted from text response',
-                        'success': True
-                    }
+            for pattern in json_patterns:
+                json_matches = re.findall(pattern, response_text, re.DOTALL | re.IGNORECASE)
+                for json_str in json_matches:
+                    try:
+                        # Clean up common JSON formatting issues
+                        cleaned_json = json_str.strip()
+                        cleaned_json = re.sub(r',\s*}', '}', cleaned_json)  # Remove trailing commas
+                        cleaned_json = re.sub(r',\s*]', ']', cleaned_json)
+                        
+                        # Parse JSON and validate with Pydantic
+                        raw_data = json.loads(cleaned_json)
+                        validated_response = MaxDiffResponse(**raw_data)
+                        
+                        # Validate item indices are within range
+                        if (1 <= validated_response.best_item <= len(trial.items) and 
+                            1 <= validated_response.worst_item <= len(trial.items)):
+                            
+                            best_idx = validated_response.best_item - 1
+                            worst_idx = validated_response.worst_item - 1
+                            
+                            return {
+                                'best_item_id': trial.items[best_idx].id,
+                                'worst_item_id': trial.items[worst_idx].id,
+                                'reasoning': validated_response.reasoning,
+                                'success': True
+                            }
+                        
+                    except (json.JSONDecodeError, ValidationError, ValueError) as e:
+                        continue  # Try next pattern
             
+            # Strategy 2: Fallback to text extraction for backwards compatibility
+            # Look for structured patterns in text
+            best_patterns = [
+                r'"?best_item"?\s*:?\s*([1-9]\d*)',
+                r'best[_\s]*(?:item|choice)?[_\s]*:?[_\s]*([1-9]\d*)',
+                r'item[_\s]*([1-9]\d*)[_\s]*(?:is|as)?[_\s]*(?:the[_\s]*)?best',
+            ]
+            
+            worst_patterns = [
+                r'"?worst_item"?\s*:?\s*([1-9]\d*)',
+                r'worst[_\s]*(?:item|choice)?[_\s]*:?[_\s]*([1-9]\d*)',
+                r'item[_\s]*([1-9]\d*)[_\s]*(?:is|as)?[_\s]*(?:the[_\s]*)?worst',
+            ]
+            
+            best_item = None
+            worst_item = None
+            
+            for pattern in best_patterns:
+                matches = re.findall(pattern, response_text, re.IGNORECASE)
+                if matches:
+                    best_item = int(matches[0])
+                    break
+            
+            for pattern in worst_patterns:
+                matches = re.findall(pattern, response_text, re.IGNORECASE)
+                if matches:
+                    worst_item = int(matches[0])
+                    break
+            
+            if (best_item and worst_item and 
+                1 <= best_item <= len(trial.items) and 
+                1 <= worst_item <= len(trial.items) and
+                best_item != worst_item):
+                
+                return {
+                    'best_item_id': trial.items[best_item - 1].id,
+                    'worst_item_id': trial.items[worst_item - 1].id,
+                    'reasoning': 'Extracted from text patterns',
+                    'success': True
+                }
+            
+            # Strategy 3: Final fallback - use first and last items
             return {
                 'best_item_id': trial.items[0].id,
                 'worst_item_id': trial.items[-1].id,
-                'reasoning': 'Fallback: could not parse response',
+                'reasoning': f'Parse failed: Could not extract valid response from "{response_text[:100]}..."',
                 'success': False,
-                'error_message': 'Could not parse model response'
+                'error_message': 'Could not parse model response with any strategy'
             }
             
         except Exception as e:
