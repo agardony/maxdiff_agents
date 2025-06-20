@@ -16,7 +16,7 @@ This project implements a MaxDiff (Maximum Difference Scaling) survey methodolog
 - **Async Execution**: Parallel processing of trials across all models
 - **Configurable Parameters**: All MaxDiff settings controllable via `.env` file
 - **Rich Reporting**: HTML reports with consensus rankings and disagreement detection
-- **Comprehensive Testing**: 91 tests covering all core functionality
+- **Comprehensive Testing**: 94 tests covering all core functionality
 - **CSV Data Export**: Timestamped run data organized in subdirectories
 
 ## Installation
@@ -154,7 +154,7 @@ Automatic timestamped CSV files saved to the `data/` directory:
 
 ## Testing
 
-The project includes a comprehensive test suite with 91 tests covering all core functionality:
+The project includes a comprehensive test suite with 94 tests covering all core functionality:
 
 ```bash
 # Run all tests

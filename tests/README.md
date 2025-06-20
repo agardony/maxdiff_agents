@@ -37,7 +37,7 @@ uv run python -m pytest tests/ --cov=src --cov-report=html
 
 The test suite provides comprehensive coverage of:
 
-### Core Components (91 tests total)
+### Core Components (94 tests total)
 - **Data Types** - All Pydantic models and validation
 - **MaxDiff Engine** - Trial generation, choice recording, completion tracking
 - **Model Clients** - API interactions, retry logic, response parsing
