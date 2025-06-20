@@ -199,7 +199,8 @@ class MaxDiffLogger:
                 'reasoning_length': len(response.reasoning) if response.reasoning else 0,
                 'has_reasoning': bool(response.reasoning),
                 'error_message': response.error_message or '',
-                'has_error': bool(response.error_message)
+                'has_error': bool(response.error_message),
+                'reasoning': response.reasoning or ''
             }
             
             self._write_csv_row(responses_csv, response_data)

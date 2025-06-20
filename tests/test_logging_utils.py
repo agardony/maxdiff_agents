@@ -182,6 +182,7 @@ class TestMaxDiffLogger:
             assert 'best_item_id' in row
             assert 'worst_item_id' in row
             assert 'trial_items' in row
+            assert 'reasoning' in row
     
     def test_get_run_summary(self, temp_data_dir):
         """Test getting run summary."""
