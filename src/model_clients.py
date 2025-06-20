@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 import openai
 import anthropic
 import google.generativeai as genai
+import instructor
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 try:
@@ -51,6 +52,64 @@ class MaxDiffResponse(BaseModel):
         if self.best_item == self.worst_item:
             raise ValueError('Best and worst items must be different')
         return self
+
+
+def pydantic_to_gemini_schema(model_class) -> dict:
+    """Convert a Pydantic model to Gemini-compatible JSON schema."""
+    from typing import get_origin, get_args, Union
+    import enum
+    
+    def convert_field_type(field_info):
+        field_type = field_info.annotation
+        
+        # Handle basic types
+        if field_type == str:
+            schema = {"type": "string"}
+        elif field_type == int:
+            schema = {"type": "integer"}
+        elif field_type == float:
+            schema = {"type": "number"}
+        elif field_type == bool:
+            schema = {"type": "boolean"}
+        else:
+            schema = {"type": "string"}  # fallback for complex types
+        
+        # Add Pydantic field constraints from metadata
+        if hasattr(field_info, 'metadata') and field_info.metadata:
+            for constraint in field_info.metadata:
+                if hasattr(constraint, 'min_length') and constraint.min_length is not None:
+                    schema["minLength"] = constraint.min_length
+                if hasattr(constraint, 'max_length') and constraint.max_length is not None:
+                    schema["maxLength"] = constraint.max_length
+                if hasattr(constraint, 'ge') and constraint.ge is not None:
+                    schema["minimum"] = constraint.ge
+                if hasattr(constraint, 'le') and constraint.le is not None:
+                    schema["maximum"] = constraint.le
+        
+        # Add description if available
+        if hasattr(field_info, 'description') and field_info.description:
+            schema["description"] = field_info.description
+        
+        return schema
+    
+    # Build the main schema
+    properties = {}
+    required = []
+    property_ordering = []
+    
+    for field_name, field_info in model_class.model_fields.items():
+        properties[field_name] = convert_field_type(field_info)
+        property_ordering.append(field_name)
+        
+        if field_info.is_required():
+            required.append(field_name)
+    
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "propertyOrdering": property_ordering
+    }
 
 
 def retry_with_backoff(config: ModelConfig = None):
@@ -118,7 +177,7 @@ class ModelClient(ABC):
     
     def _create_prompt(self, trial: TrialSet, config: EngineConfig) -> str:
         """Create a prompt for the MaxDiff trial with Pydantic schema."""
-        items_list = "\\n".join([f"{i+1}. {item.name}" for i, item in enumerate(trial.items)])
+        items_list = "\n".join([f"{i+1}. {item.name}" for i, item in enumerate(trial.items)])
         
         # Get the Pydantic schema for structured responses
         schema = MaxDiffResponse.model_json_schema()
@@ -147,7 +206,27 @@ Example response format:
 }}
 
 Respond only with the JSON object, no additional text."""
+        
+        return prompt
+    
+    def _create_openai_prompt(self, trial: TrialSet, config: EngineConfig) -> str:
+        """Create a simplified prompt for OpenAI that relies on response_format for structure."""
+        items_list = "\n".join([f"{i+1}. {item.name}" for i, item in enumerate(trial.items)])
+        
+        prompt = f"""{config.persona}. You are participating in a MaxDiff (Maximum Difference Scaling) survey. 
 
+{config.instruction_text}
+
+Here are the items to evaluate:
+{items_list}
+
+Please provide:
+- best_item: The number (1-{len(trial.items)}) of the item you find {config.dimension_positive_label.lower()}
+- worst_item: The number (1-{len(trial.items)}) of the item you find {config.dimension_negative_label.lower()}
+- reasoning: A brief explanation (10-1000 characters) of your choices
+
+Make sure best_item and worst_item are different numbers."""
+        
         return prompt
     
     def _parse_response(self, response_text: str, trial: TrialSet) -> Dict[str, Any]:
@@ -258,37 +337,48 @@ class OpenAIClient(ModelClient):
         self.client = openai.AsyncOpenAI(api_key=api_key)
     
     @retry_with_backoff()
-    async def _make_api_call(self, prompt: str) -> str:
-        """Make the actual API call with retry logic."""
+    async def _make_api_call(self, prompt: str, trial: TrialSet) -> MaxDiffResponse:
+        """Make the actual API call with retry logic using Pydantic response format."""
         import os
-        response = await self.client.chat.completions.create(
+        response = await self.client.beta.chat.completions.parse(
             model=self.model_name,
             messages=[
-                {"role": "system", "content": "You are a helpful assistant that responds with JSON."},
                 {"role": "user", "content": prompt}
             ],
+            response_format=MaxDiffResponse,
             temperature=float(os.getenv('LLM_TEMPERATURE', 0.8)),
-            max_tokens=int(os.getenv('LLM_MAX_TOKENS', 100)),
+            max_tokens=int(os.getenv('LLM_MAX_TOKENS', 150)),
             top_p=float(os.getenv('LLM_TOP_P', 0.9))
         )
-        return response.choices[0].message.content
+        
+        parsed_response = response.choices[0].message.parsed
+        
+        # Validate item indices are within range
+        if (1 <= parsed_response.best_item <= len(trial.items) and 
+            1 <= parsed_response.worst_item <= len(trial.items)):
+            return parsed_response
+        else:
+            # If indices are out of range, raise an error to trigger fallback
+            raise ValueError(f"Item indices out of range: best={parsed_response.best_item}, worst={parsed_response.worst_item}, max={len(trial.items)}")
     
     async def evaluate_trial(self, trial: TrialSet, config: EngineConfig) -> ModelResponse:
-        """Evaluate a trial using OpenAI's API with retry logic."""
+        """Evaluate a trial using OpenAI's API with native Pydantic support."""
         try:
-            prompt = self._create_prompt(trial, config)
-            response_text = await self._make_api_call(prompt)
-            parsed = self._parse_response(response_text, trial)
+            prompt = self._create_openai_prompt(trial, config)
+            pydantic_response = await self._make_api_call(prompt, trial)
+            
+            best_idx = pydantic_response.best_item - 1
+            worst_idx = pydantic_response.worst_item - 1
             
             return ModelResponse(
                 model_name=f"openai-{self.model_name}",
                 trial_number=trial.trial_number,
-                best_item_id=parsed['best_item_id'],
-                worst_item_id=parsed['worst_item_id'],
-                reasoning=parsed.get('reasoning'),
-                raw_response=response_text,
-                success=parsed.get('success', True),
-                error_message=parsed.get('error_message')
+                best_item_id=trial.items[best_idx].id,
+                worst_item_id=trial.items[worst_idx].id,
+                reasoning=pydantic_response.reasoning,
+                raw_response=f"Parsed Pydantic response: {pydantic_response.model_dump()}",
+                success=True,
+                error_message=None
             )
             
         except Exception as e:
@@ -308,13 +398,60 @@ class AnthropicClient(ModelClient):
     
     def __init__(self, model_name: str, api_key: str):
         super().__init__(model_name, api_key)
-        self.client = anthropic.AsyncAnthropic(api_key=api_key)
+        # Create the base Anthropic client
+        base_client = anthropic.AsyncAnthropic(api_key=api_key)
+        # Patch it with Instructor for structured outputs
+        self.client = instructor.from_anthropic(base_client)
+        # Keep a reference to the base client for fallback
+        self.base_client = base_client
+    
+    def _create_anthropic_prompt(self, trial: TrialSet, config: EngineConfig) -> str:
+        """Create a simplified prompt for Anthropic that relies on Instructor for structure."""
+        items_list = "\n".join([f"{i+1}. {item.name}" for i, item in enumerate(trial.items)])
+        
+        prompt = f"""{config.persona}. You are participating in a MaxDiff (Maximum Difference Scaling) survey. 
+
+{config.instruction_text}
+
+Here are the items to evaluate:
+{items_list}
+
+Please provide:
+- best_item: The number (1-{len(trial.items)}) of the item you find {config.dimension_positive_label.lower()}
+- worst_item: The number (1-{len(trial.items)}) of the item you find {config.dimension_negative_label.lower()}
+- reasoning: A brief explanation (10-1000 characters) of your choices
+
+Make sure best_item and worst_item are different numbers."""
+        
+        return prompt
+    
+    @retry_with_backoff()
+    async def _make_api_call_structured(self, prompt: str, trial: TrialSet) -> MaxDiffResponse:
+        """Make the actual API call with retry logic using Instructor structured output."""
+        import os
+        
+        response = await self.client.messages.create(
+            model=self.model_name,
+            max_tokens=int(os.getenv('LLM_MAX_TOKENS', 150)),
+            temperature=float(os.getenv('LLM_TEMPERATURE', 0.8)),
+            top_p=float(os.getenv('LLM_TOP_P', 0.9)),
+            messages=[{"role": "user", "content": prompt}],
+            response_model=MaxDiffResponse
+        )
+        
+        # Validate item indices are within range
+        if (1 <= response.best_item <= len(trial.items) and 
+            1 <= response.worst_item <= len(trial.items)):
+            return response
+        else:
+            # If indices are out of range, raise an error to trigger fallback
+            raise ValueError(f"Item indices out of range: best={response.best_item}, worst={response.worst_item}, max={len(trial.items)}")
     
     @retry_with_backoff()
     async def _make_api_call(self, prompt: str) -> str:
-        """Make the actual API call with retry logic."""
+        """Make the actual API call with retry logic (fallback method)."""
         import os
-        response = await self.client.messages.create(
+        response = await self.base_client.messages.create(
             model=self.model_name,
             max_tokens=int(os.getenv('LLM_MAX_TOKENS', 100)),
             temperature=float(os.getenv('LLM_TEMPERATURE', 0.8)),
@@ -324,21 +461,23 @@ class AnthropicClient(ModelClient):
         return response.content[0].text
     
     async def evaluate_trial(self, trial: TrialSet, config: EngineConfig) -> ModelResponse:
-        """Evaluate a trial using Anthropic's API with retry logic."""
+        """Evaluate a trial using Anthropic's API with Instructor structured output."""
         try:
-            prompt = self._create_prompt(trial, config)
-            response_text = await self._make_api_call(prompt)
-            parsed = self._parse_response(response_text, trial)
+            prompt = self._create_anthropic_prompt(trial, config)
+            pydantic_response = await self._make_api_call_structured(prompt, trial)
+            
+            best_idx = pydantic_response.best_item - 1
+            worst_idx = pydantic_response.worst_item - 1
             
             return ModelResponse(
                 model_name=f"anthropic-{self.model_name}",
                 trial_number=trial.trial_number,
-                best_item_id=parsed['best_item_id'],
-                worst_item_id=parsed['worst_item_id'],
-                reasoning=parsed.get('reasoning'),
-                raw_response=response_text,
-                success=parsed.get('success', True),
-                error_message=parsed.get('error_message')
+                best_item_id=trial.items[best_idx].id,
+                worst_item_id=trial.items[worst_idx].id,
+                reasoning=pydantic_response.reasoning,
+                raw_response=f"Parsed Instructor response: {pydantic_response.model_dump()}",
+                success=True,
+                error_message=None
             )
             
         except Exception as e:
@@ -361,9 +500,69 @@ class GoogleClient(ModelClient):
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel(model_name)
     
+    def _create_gemini_prompt(self, trial: TrialSet, config: EngineConfig) -> str:
+        """Create a simplified prompt for Gemini that relies on response_schema for structure."""
+        items_list = "\n".join([f"{i+1}. {item.name}" for i, item in enumerate(trial.items)])
+        
+        prompt = f"""{config.persona}. You are participating in a MaxDiff (Maximum Difference Scaling) survey. 
+
+{config.instruction_text}
+
+Here are the items to evaluate:
+{items_list}
+
+Please provide:
+- best_item: The number (1-{len(trial.items)}) of the item you find {config.dimension_positive_label.lower()}
+- worst_item: The number (1-{len(trial.items)}) of the item you find {config.dimension_negative_label.lower()}
+- reasoning: A brief explanation (10-1000 characters) of your choices
+
+Make sure best_item and worst_item are different numbers."""
+        
+        return prompt
+    
+    @retry_with_backoff()
+    async def _make_api_call_structured(self, prompt: str, trial: TrialSet) -> MaxDiffResponse:
+        """Make the actual API call with retry logic using Gemini's structured output."""
+        import os
+        
+        # Convert Pydantic model to Gemini schema
+        gemini_schema = pydantic_to_gemini_schema(MaxDiffResponse)
+        
+        # Google's API is not async, so we run it in a thread pool
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None, 
+            lambda: self.model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    response_mime_type="application/json",
+                    response_schema=gemini_schema,
+                    temperature=float(os.getenv('LLM_TEMPERATURE', 0.8)),
+                    max_output_tokens=int(os.getenv('LLM_MAX_TOKENS', 150)),
+                    top_p=float(os.getenv('LLM_TOP_P', 0.9)),
+                )
+            )
+        )
+        
+        # Parse the JSON response and validate with Pydantic
+        try:
+            raw_data = json.loads(response.text)
+            pydantic_response = MaxDiffResponse(**raw_data)
+            
+            # Validate item indices are within range
+            if (1 <= pydantic_response.best_item <= len(trial.items) and 
+                1 <= pydantic_response.worst_item <= len(trial.items)):
+                return pydantic_response
+            else:
+                # If indices are out of range, raise an error to trigger fallback
+                raise ValueError(f"Item indices out of range: best={pydantic_response.best_item}, worst={pydantic_response.worst_item}, max={len(trial.items)}")
+                
+        except (json.JSONDecodeError, ValidationError) as e:
+            raise ValueError(f"Failed to parse Gemini structured response: {e}. Raw response: {response.text}")
+    
     @retry_with_backoff()
     async def _make_api_call(self, prompt: str) -> str:
-        """Make the actual API call with retry logic."""
+        """Make the actual API call with retry logic (fallback method)."""
         import os
         # Google's API is not async, so we run it in a thread pool
         loop = asyncio.get_event_loop()
@@ -381,21 +580,23 @@ class GoogleClient(ModelClient):
         return response.text
     
     async def evaluate_trial(self, trial: TrialSet, config: EngineConfig) -> ModelResponse:
-        """Evaluate a trial using Google's Gemini API with retry logic."""
+        """Evaluate a trial using Google's Gemini API with native structured output."""
         try:
-            prompt = self._create_prompt(trial, config)
-            response_text = await self._make_api_call(prompt)
-            parsed = self._parse_response(response_text, trial)
+            prompt = self._create_gemini_prompt(trial, config)
+            pydantic_response = await self._make_api_call_structured(prompt, trial)
+            
+            best_idx = pydantic_response.best_item - 1
+            worst_idx = pydantic_response.worst_item - 1
             
             return ModelResponse(
                 model_name=f"google-{self.model_name}",
                 trial_number=trial.trial_number,
-                best_item_id=parsed['best_item_id'],
-                worst_item_id=parsed['worst_item_id'],
-                reasoning=parsed.get('reasoning'),
-                raw_response=response_text,
-                success=parsed.get('success', True),
-                error_message=parsed.get('error_message')
+                best_item_id=trial.items[best_idx].id,
+                worst_item_id=trial.items[worst_idx].id,
+                reasoning=pydantic_response.reasoning,
+                raw_response=f"Parsed Gemini structured response: {pydantic_response.model_dump()}",
+                success=True,
+                error_message=None
             )
             
         except Exception as e:

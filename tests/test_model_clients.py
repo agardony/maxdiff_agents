@@ -207,13 +207,22 @@ class TestOpenAIClient:
     
     @pytest.mark.asyncio
     async def test_openai_evaluate_trial_success(self, sample_trial, engine_config):
-        """Test successful OpenAI API call."""
+        """Test successful OpenAI API call with Pydantic response format."""
+        from src.model_clients import MaxDiffResponse
+        
+        # Mock Pydantic response
+        mock_pydantic_response = MaxDiffResponse(
+            best_item=1,
+            worst_item=4,
+            reasoning="AI reasoning from Pydantic response"
+        )
+        
         mock_response = MagicMock()
-        mock_response.choices[0].message.content = '{"best_item": 1, "worst_item": 4, "reasoning": "AI reasoning"}'
+        mock_response.choices[0].message.parsed = mock_pydantic_response
         
         with patch('src.model_clients.openai.AsyncOpenAI') as mock_openai:
             mock_client = AsyncMock()
-            mock_client.chat.completions.create.return_value = mock_response
+            mock_client.beta.chat.completions.parse.return_value = mock_response
             mock_openai.return_value = mock_client
             
             client = OpenAIClient(model_name="gpt-4", api_key="test-key")
@@ -222,7 +231,7 @@ class TestOpenAIClient:
             assert response.model_name == "openai-gpt-4"
             assert response.trial_number == sample_trial.trial_number
             assert response.success is True
-            assert response.reasoning == "AI reasoning"
+            assert response.reasoning == "AI reasoning from Pydantic response"
             assert response.best_item_id == sample_trial.items[0].id
             assert response.worst_item_id == sample_trial.items[3].id
     
@@ -231,7 +240,7 @@ class TestOpenAIClient:
         """Test OpenAI API error handling."""
         with patch('src.model_clients.openai.AsyncOpenAI') as mock_openai:
             mock_client = AsyncMock()
-            mock_client.chat.completions.create.side_effect = Exception("API Error")
+            mock_client.beta.chat.completions.parse.side_effect = Exception("API Error")
             mock_openai.return_value = mock_client
             
             client = OpenAIClient(model_name="gpt-4", api_key="test-key")
@@ -251,22 +260,48 @@ class TestAnthropicClient:
     @pytest.mark.asyncio
     async def test_anthropic_client_initialization(self):
         """Test Anthropic client initialization."""
-        with patch('src.model_clients.anthropic.AsyncAnthropic') as mock_anthropic:
+        with patch('src.model_clients.anthropic.AsyncAnthropic') as mock_anthropic, \
+             patch('src.model_clients.instructor') as mock_instructor_module:
+            
+            # Setup mock instructor client
+            mock_instructor_client = AsyncMock()
+            mock_instructor_module.from_anthropic.return_value = mock_instructor_client
+            
+            # Setup mock base client
+            mock_base_client = AsyncMock()
+            mock_anthropic.return_value = mock_base_client
+            
             client = AnthropicClient(model_name="claude-3", api_key="test-key")
             assert client.model_name == "claude-3"
             assert client.api_key == "test-key"
             mock_anthropic.assert_called_once_with(api_key="test-key")
+            mock_instructor_module.from_anthropic.assert_called_once_with(mock_base_client)
     
     @pytest.mark.asyncio
     async def test_anthropic_evaluate_trial_success(self, sample_trial, engine_config):
-        """Test successful Anthropic API call."""
-        mock_response = MagicMock()
-        mock_response.content[0].text = '{"best_item": 2, "worst_item": 3, "reasoning": "Claude reasoning"}'
+        """Test successful Anthropic API call with Instructor structured output."""
+        from src.model_clients import MaxDiffResponse
         
-        with patch('src.model_clients.anthropic.AsyncAnthropic') as mock_anthropic:
-            mock_client = AsyncMock()
-            mock_client.messages.create.return_value = mock_response
-            mock_anthropic.return_value = mock_client
+        # Mock the Pydantic response that Instructor would return
+        mock_pydantic_response = MaxDiffResponse(
+            best_item=2,
+            worst_item=3,
+            reasoning="Claude structured reasoning from Instructor integration"
+        )
+        
+        with patch('src.model_clients.instructor') as mock_instructor_module, \
+             patch('src.model_clients.anthropic.AsyncAnthropic') as mock_anthropic:
+            
+            # Setup mock Instructor client
+            mock_instructor_client = AsyncMock()
+            mock_instructor_client.messages.create.return_value = mock_pydantic_response
+            
+            # Mock the instructor.from_anthropic function to return our mock client
+            mock_instructor_module.from_anthropic.return_value = mock_instructor_client
+            
+            # Setup mock base client
+            mock_base_client = AsyncMock()
+            mock_anthropic.return_value = mock_base_client
             
             client = AnthropicClient(model_name="claude-3", api_key="test-key")
             response = await client.evaluate_trial(sample_trial, engine_config)
@@ -274,9 +309,14 @@ class TestAnthropicClient:
             assert response.model_name == "anthropic-claude-3"
             assert response.trial_number == sample_trial.trial_number
             assert response.success is True
-            assert response.reasoning == "Claude reasoning"
+            assert "structured reasoning" in response.reasoning
             assert response.best_item_id == sample_trial.items[1].id
             assert response.worst_item_id == sample_trial.items[2].id
+            
+            # Verify that Instructor was used
+            mock_instructor_client.messages.create.assert_called_once()
+            call_args = mock_instructor_client.messages.create.call_args
+            assert call_args[1]['response_model'] == MaxDiffResponse
 
 
 class TestGoogleClient:
@@ -296,9 +336,12 @@ class TestGoogleClient:
     
     @pytest.mark.asyncio
     async def test_google_evaluate_trial_success(self, sample_trial, engine_config):
-        """Test successful Google API call."""
+        """Test successful Google API call with structured output."""
+        from src.model_clients import MaxDiffResponse
+        
+        # Mock the JSON response that Gemini would return
         mock_response = MagicMock()
-        mock_response.text = '{"best_item": 3, "worst_item": 1, "reasoning": "Gemini reasoning"}'
+        mock_response.text = '{"best_item": 3, "worst_item": 1, "reasoning": "Gemini structured reasoning from native schema support"}'
         
         with patch('src.model_clients.genai.configure'), \
              patch('src.model_clients.genai.GenerativeModel') as mock_model_class:
@@ -313,9 +356,15 @@ class TestGoogleClient:
             assert response.model_name == "google-gemini-pro"
             assert response.trial_number == sample_trial.trial_number
             assert response.success is True
-            assert response.reasoning == "Gemini reasoning"
+            assert "structured reasoning" in response.reasoning
             assert response.best_item_id == sample_trial.items[2].id
             assert response.worst_item_id == sample_trial.items[0].id
+            
+            # Verify that the structured generation config was used
+            call_args = mock_model.generate_content.call_args
+            generation_config = call_args[1]['generation_config']
+            assert generation_config.response_mime_type == "application/json"
+            assert generation_config.response_schema is not None
 
 
 class TestPromptGeneration:
