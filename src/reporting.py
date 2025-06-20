@@ -805,7 +805,7 @@ def generate_html_report(session: TaskSession, config: ReportConfig) -> str:
         
         <div class="section">
             <h2>⚡ Major Disagreements</h2>
-            <p>Items with significant disagreement across AI models (statistical outliers using 2-sigma threshold):</p>
+            <p>{"No items with significant disagreement across AI models (statistical outliers using 2-sigma threshold)." if not results.disagreement_points else "Items with significant disagreement across AI models (statistical outliers using 2-sigma threshold):"}</p>
             <div class="disagreement-cards">
                 {disagreement_cards}
             </div>
