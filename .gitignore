@@ -225,6 +225,14 @@ models/
 .cache/
 cache/
 
+# Test outputs
+tests/test_data/
+tests/temp/
+tests/**/*.csv
+tests/**/*.html
+tests/**/*.json
+tests/**/*.log
+
 # Reference project (temporary)
 /tmp/
 
