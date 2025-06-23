@@ -13,11 +13,12 @@ This project implements a MaxDiff (Maximum Difference Scaling) survey methodolog
 ## Features
 
 - **Multi-Model Support**: OpenAI GPT, Anthropic Claude, and Google Gemini
-- **Async Execution**: Parallel processing of trials across all models
+- **Multi-Persona Support**: Run evaluations with multiple personas to compare perspective differences
+- **Async Execution**: Parallel processing of trials across all models and personas
 - **Configurable Parameters**: All MaxDiff settings controllable via `.env` file
 - **Rich Reporting**: HTML reports with consensus rankings and disagreement detection
 - **Structured Response Parsing**: Pydantic-based validation for robust LLM response handling
-- **Comprehensive Testing**: 118 tests covering all core functionality
+- **Comprehensive Testing**: 130+ tests covering all core functionality including persona handling
 - **CSV Data Export**: Timestamped run data organized in subdirectories
 
 ## Installation
@@ -57,13 +58,16 @@ INSTRUCTION_TEXT=Please choose the item you find BEST and the item you find WORS
 PERSONA=You are an expert evaluating these items objectively
 ```
 
-#### Persona Examples
-Customize the AI model's perspective with different personas:
+#### Single Persona (Traditional)
+Customize the AI model's perspective with a single persona:
 - `PERSONA=You are an expert marketing product manager`
 - `PERSONA=You are a software engineer evaluating development tools`
 - `PERSONA=You are a UX designer focusing on user experience`
 - `PERSONA=You are a business executive prioritizing strategic initiatives`
 - `PERSONA=You are a customer evaluating products for purchase`
+
+#### Multi-Persona Support (New)
+Run evaluations with multiple personas to compare how different perspectives affect rankings. See [Multi-Persona Usage](#multi-persona-usage) section below.
 
 ### Model Configuration
 ```bash
@@ -93,7 +97,7 @@ REPORT_STYLE=detailed
 # Activate environment
 source .venv/bin/activate
 
-# Run with default settings
+# Run with default settings (uses .env PERSONA)
 python max_diff.py
 
 # Run with custom items file
@@ -102,6 +106,76 @@ python max_diff.py --items-file my_items.txt
 # Run with custom environment file
 python max_diff.py --env-file .env.production
 ```
+
+### Multi-Persona Usage
+
+Run evaluations with multiple personas to compare how different perspectives affect item rankings.
+
+#### Using a Personas File
+```bash
+# Run with multiple personas from file
+python max_diff.py --personas-file sample_personas.txt
+
+# Run with custom personas file and items
+python max_diff.py --items-file my_items.txt --personas-file my_personas.txt
+```
+
+#### Using a Single Persona Override
+```bash
+# Override .env PERSONA with command-line persona
+python max_diff.py --persona "You are a budget-conscious consumer"
+```
+
+#### Personas File Format
+Create a text file with personas separated by `=== PERSONA N ===` delimiters:
+
+```
+=== PERSONA 1 ===
+You are a professional food critic with 15 years of experience writing for major culinary publications.
+
+You have a refined palate and deep knowledge of:
+- International cuisine traditions
+- Flavor profiles and ingredient interactions
+- Restaurant industry standards
+
+When evaluating food items, you consider complexity, authenticity, and innovation.
+
+=== PERSONA 2 ===
+You are a busy parent of two young children, shopping on a tight budget.
+
+Your priorities when choosing food are:
+- Affordability and value for money
+- Convenience and preparation time
+- Kid-friendly flavors and textures
+- Nutritional value for growing children
+
+You prefer simple, familiar foods that your family will actually eat.
+
+=== PERSONA 3 ===
+You are a fitness enthusiast and certified nutritionist focused on performance optimization.
+
+Your food evaluation criteria include:
+- Macronutrient profile and micronutrient density
+- Impact on athletic performance
+- Recovery and energy sustainability
+- Ingredient quality and processing level
+
+You prioritize whole foods and evidence-based nutrition principles.
+```
+
+#### Priority Order
+The system uses personas in this priority order:
+1. **`--persona` parameter** (single persona override)
+2. **`--personas-file` parameter** (multiple personas from file)
+3. **`.env` PERSONA variable** (fallback single persona)
+
+#### Edge Case Handling
+The system gracefully handles:
+- **Empty files**: Returns no personas, shows warning
+- **No delimiters**: Treats entire file as single persona
+- **Empty personas**: Skips empty sections, warns user
+- **Malformed delimiters**: Only recognizes `=== PERSONA N ===` format
+- **File not found**: Shows error, continues with .env fallback
 
 ### Input Format
 Create a text file with one item per line:
@@ -133,7 +207,8 @@ Detailed structured output including:
 Automatic timestamped CSV files saved to the `data/` directory:
 
 - **`maxdiff_runs_YYYYMMDD_HHMMSS.csv`**: Main run results with:
-  - Execution metrics (trials, models, success rates)
+  - Execution metrics (trials, models, personas, success rates)
+  - Multi-persona run indicators
   - Top/bottom items and utility scores
   - Agreement statistics
   - Performance data
@@ -146,8 +221,9 @@ Automatic timestamped CSV files saved to the `data/` directory:
   - Agreement metrics per item
 
 - **`maxdiff_responses_YYYYMMDD_HHMMSS.csv`**: Response-level details:
-  - Individual trial responses
-  - Best/worst choices per model
+  - Individual trial responses with persona information
+  - Best/worst choices per model and persona
+  - Persona index and truncated persona text
   - Error tracking
   - Reasoning analysis
 
@@ -174,6 +250,7 @@ uv run python -m pytest tests/test_types.py -v
 - **Model clients** (API interactions, retry logic, response parsing)
 - **Reporting** (score calculation, HTML generation)
 - **Logging utilities** (CSV output, run organization)
+- **Multi-persona functionality** (file parsing, edge cases, integration)
 - **Error handling** and edge cases
 - **Security** (API key redaction)
 
@@ -237,7 +314,8 @@ maxdiff_agents/
 ├── setup.py
 ├── setup.cfg
 ├── max_diff.py
-└── sample_items.txt
+├── sample_items.txt
+└── sample_personas.txt      # Example personas file
 ```
 
 ### Extending the Project

@@ -10,6 +10,7 @@ This directory contains a comprehensive test suite for the MaxDiff AI Agents pro
 - **`test_model_clients.py`** - Tests for AI model client implementations
 - **`test_reporting.py`** - Tests for report generation and data aggregation
 - **`test_logging_utils.py`** - Tests for CSV logging and data persistence
+- **`test_personas.py`** - Tests for multi-persona functionality and file parsing
 
 ## Running Tests
 
@@ -37,12 +38,13 @@ uv run python -m pytest tests/ --cov=src --cov-report=html
 
 The test suite provides comprehensive coverage of:
 
-### Core Components (118 tests total)
-- **Data Types** - All Pydantic models and validation (16 tests)
+### Core Components (138 tests total)
+- **Data Types** - All Pydantic models and validation (18 tests)
 - **MaxDiff Engine** - Trial generation, choice recording, completion tracking (15 tests)
-- **Model Clients** - API interactions, retry logic, Pydantic response parsing (46 tests)
+- **Model Clients** - API interactions, retry logic, Pydantic response parsing (74 tests)
 - **Reporting** - Score calculation, ranking, HTML/JSON generation (25 tests)
 - **Logging** - CSV output, run organization, sensitive data redaction (16 tests)
+- **Multi-Persona** - File parsing, edge cases, integration testing (20 tests)
 
 ### Key Features Tested
 - ✅ Input validation and edge cases
@@ -52,6 +54,9 @@ The test suite provides comprehensive coverage of:
 - ✅ Mock testing for external APIs
 - ✅ Data aggregation and statistical calculations
 - ✅ Run isolation and timestamp management
+- ✅ Multi-persona file parsing and validation
+- ✅ Persona priority system and fallback behavior
+- ✅ Unicode content and edge case handling
 
 ## Test Dependencies
 

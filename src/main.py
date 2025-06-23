@@ -5,6 +5,7 @@ import os
 import asyncio
 import click
 import time
+from typing import List, Optional
 from dotenv import load_dotenv
 # Import handling for both package and standalone execution
 try:
@@ -20,13 +21,100 @@ except ImportError:
     from src.maxdiff_engine import MaxDiffEngine
     from src.model_clients import OpenAIClient, AnthropicClient, GoogleClient
     from src.reporting import generate_report, aggregate_results
-    from src.logging_utils import MaxDiffLogger, get_environment_settings
+from src.logging_utils import MaxDiffLogger, get_environment_settings
+
+
+def load_personas(personas_file: Optional[str], single_persona: Optional[str]) -> List[str]:
+    """
+    Load personas from file or use single persona or fallback to .env PERSONA.
+    
+    Args:
+        personas_file: Path to file containing personas delimited by === PERSONA N ===
+        single_persona: Single persona string to use (overrides all others)
+        
+    Returns:
+        List of persona strings
+    """
+    # Priority 1: Single persona parameter
+    if single_persona:
+        return [single_persona.strip()]
+    
+    # Priority 2: Personas file
+    if personas_file:
+        try:
+            with open(personas_file, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+            
+            if not content:
+                print(f"Warning: Personas file '{personas_file}' is empty.")
+                return []
+            
+            # Split by delimiter pattern
+            import re
+            delimiter_pattern = r'^\s*===\s*PERSONA\s+\d+\s*===\s*$'
+            
+            # Find all delimiter positions
+            lines = content.split('\n')
+            delimiter_indices = []
+            
+            for i, line in enumerate(lines):
+                if re.match(delimiter_pattern, line, re.IGNORECASE):
+                    delimiter_indices.append(i)
+            
+            if not delimiter_indices:
+                # No delimiters found - treat entire file as single persona
+                print(f"Warning: No valid delimiters found in '{personas_file}'. Treating entire file as single persona.")
+                return [content.strip()] if content.strip() else []
+            
+            # Extract personas between delimiters
+            personas = []
+            for i, start_idx in enumerate(delimiter_indices):
+                # Determine end index
+                if i + 1 < len(delimiter_indices):
+                    end_idx = delimiter_indices[i + 1]
+                else:
+                    end_idx = len(lines)
+                
+                # Extract persona content (skip the delimiter line)
+                persona_lines = lines[start_idx + 1:end_idx]
+                persona_content = '\n'.join(persona_lines).strip()
+                
+                if persona_content:
+                    personas.append(persona_content)
+                else:
+                    print(f"Warning: Empty persona found after delimiter at line {start_idx + 1}")
+            
+            if not personas:
+                print(f"Warning: No valid personas found in '{personas_file}'.")
+                return []
+            
+            print(f"Loaded {len(personas)} persona(s) from '{personas_file}'")
+            return personas
+            
+        except FileNotFoundError:
+            print(f"Error: Personas file '{personas_file}' not found.")
+            return []
+        except Exception as e:
+            print(f"Error reading personas file '{personas_file}': {e}")
+            return []
+    
+    # Priority 3: Fallback to .env PERSONA
+    env_persona = os.getenv('PERSONA')
+    if env_persona:
+        print("Using persona from .env PERSONA variable")
+        return [env_persona.strip()]
+    
+    # No personas found
+    print("Warning: No personas specified. Use --personas-file, --persona, or set PERSONA in .env")
+    return []
 
 
 @click.command()
 @click.option('--items-file', default='sample_items.txt', help='File containing items for evaluation.')
 @click.option('--env-file', default='.env', help='Environment configuration file.')
-def main(items_file: str, env_file: str):
+@click.option('--personas-file', default=None, help='File containing personas delimited by === PERSONA N ===.')
+@click.option('--persona', default=None, help='Single persona to use (overrides personas-file and .env PERSONA).')
+def main(items_file: str, env_file: str, personas_file: Optional[str], persona: Optional[str]):
     """
     Main function to execute MaxDiff tasks with AI models.
     """
@@ -42,14 +130,20 @@ def main(items_file: str, env_file: str):
     
     print(f"📊 Logging to data directory with run ID: {logger.timestamp}")
     
-    # Load configuration from .env
-    config = EngineConfig(
+    # Load personas
+    personas = load_personas(personas_file, persona)
+    if not personas:
+        print("Error: No personas found. Please provide a personas file with at least one persona.")
+        return
+    
+    # Load base configuration from .env (persona will be set per iteration)
+    base_config = EngineConfig(
         items_per_subset=int(os.getenv('ITEMS_PER_SUBSET', 4)),
         target_trials=int(os.getenv('TARGET_TRIALS', 20)),
         dimension_positive_label=os.getenv('DIMENSION_POSITIVE_LABEL', 'Best'),
         dimension_negative_label=os.getenv('DIMENSION_NEGATIVE_LABEL', 'Worst'),
         instruction_text=os.getenv('INSTRUCTION_TEXT', 'Please choose the item you find BEST and the item you find WORST.'),
-        persona=os.getenv('PERSONA', 'You are an expert evaluating these items objectively')
+        persona=personas[0]  # Will be updated per persona iteration
     )
     
     # Load items
@@ -59,7 +153,7 @@ def main(items_file: str, env_file: str):
         ]
     
     # Initialize the engine
-    engine = MaxDiffEngine(items=items, config=config)
+    engine = MaxDiffEngine(items=items, config=base_config)
     trials = engine.generate_all_trials()
     
     # Load model configuration from environment
@@ -104,35 +198,50 @@ def main(items_file: str, env_file: str):
     for client in clients:
         print(f"  - {client.model_name}")
     
-    # Execute trials asynchronously
+    # Execute trials asynchronously with multiple personas
     async def execute_trials():
-        responses = []
+        all_responses = []
         max_concurrent_requests = int(os.getenv('MAX_CONCURRENT_REQUESTS', 5))
         semaphore = asyncio.Semaphore(max_concurrent_requests)
         
-        async def execute_single_trial_model(trial, client):
+        async def execute_single_trial_model_persona(trial, client, persona, persona_index):
             async with semaphore:
-                return await client.evaluate_trial(trial, config)
+                # Create config with current persona
+                current_config = EngineConfig(
+                    items_per_subset=base_config.items_per_subset,
+                    target_trials=base_config.target_trials,
+                    dimension_positive_label=base_config.dimension_positive_label,
+                    dimension_negative_label=base_config.dimension_negative_label,
+                    instruction_text=base_config.instruction_text,
+                    persona=persona
+                )
+                response = await client.evaluate_trial(trial, current_config)
+                # Add persona information to response
+                response.persona_index = persona_index
+                return response
         
-        # Create all tasks
+        # Create all tasks for all personas
         tasks = []
-        for trial in trials:
-            for client in clients:
-                task = asyncio.create_task(execute_single_trial_model(trial, client))
-                tasks.append((task, trial, client))
+        for persona_index, persona in enumerate(personas):
+            print(f"Setting up tasks for persona {persona_index + 1}/{len(personas)}")
+            for trial in trials:
+                for client in clients:
+                    task = asyncio.create_task(execute_single_trial_model_persona(trial, client, persona, persona_index))
+                    tasks.append((task, trial, client, persona_index))
         
-        print(f"Created {len(tasks)} tasks ({len(trials)} trials × {len(clients)} clients)")
+        total_tasks = len(tasks)
+        print(f"Created {total_tasks} tasks ({len(trials)} trials × {len(clients)} clients × {len(personas)} personas)")
         
         # Wait for all tasks to complete
-        for i, (task, trial, client) in enumerate(tasks):
+        for i, (task, trial, client, persona_index) in enumerate(tasks):
             try:
                 response = await task
-                responses.append(response)
-                print(f"Completed task {i+1}/{len(tasks)} - Trial {trial.trial_number}, Client {client.model_name}")
+                all_responses.append(response)
+                print(f"Completed task {i+1}/{total_tasks} - Persona {persona_index + 1}, Trial {trial.trial_number}, Client {client.model_name}")
             except Exception as e:
-                print(f"Error in task {i+1}/{len(tasks)} - Trial {trial.trial_number}, Client {client.model_name}: {e}")
+                print(f"Error in task {i+1}/{total_tasks} - Persona {persona_index + 1}, Trial {trial.trial_number}, Client {client.model_name}: {e}")
         
-        return responses
+        return all_responses
     
     # Run the async task loop with timing
     start_time = time.time()
@@ -141,13 +250,16 @@ def main(items_file: str, env_file: str):
     
     print(f"⏱️  Total execution time: {execution_time:.2f} seconds")
     
-    # Compile task session
+    # Compile task session (using base config for consistency)
     session = TaskSession(
         items=items,
-        config=config,
+        config=base_config,
         trials=trials,
         responses=responses
     )
+    
+    # Add personas information to session for reporting
+    session.personas = personas
     
     # Generate report
     report_config = ReportConfig(

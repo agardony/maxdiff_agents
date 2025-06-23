@@ -56,6 +56,7 @@ class ModelResponse(BaseModel):
     raw_response: Optional[str] = None
     success: bool = True
     error_message: Optional[str] = None
+    persona_index: Optional[int] = None  # Index of persona used (0-based)
 
 
 class ModelConfig(BaseModel):
@@ -96,4 +97,5 @@ class TaskSession:
     trials: List[TrialSet]
     responses: List[ModelResponse]
     results: Optional[AggregatedResults] = None
+    personas: Optional[List[str]] = None  # List of personas used in this session
 
