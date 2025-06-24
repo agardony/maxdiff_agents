@@ -1,0 +1,14 @@
+Choice Modeling Hands-On: Introduction to Conjoint Analysis and MaxDiff
+Survey Masterclass: Intensive Review of Best Practices for Online Surveys
+Log Sequence Analysis: Tools to Visualize, Model, and Understand Instrument Logs
+Psychometrics for Survey Scales: Reliability and Validity Assessment for Practitioners
+R-Intensive: In-Person R Programming Bootcamp for Social Scientists in Industry
+The Price is Right: Best Practices in Pricing Research
+HEART UX Metrics Deep Dive: From Best Practices to Leading HEART Workshops with Your Team
+Introduction to Bayesian Statistics: Linear and Hierarchical Linear Bayesian Models in R
+Text Analytics 0 to 60: Sentiment Analysis and Topic Modeling with Natural Language Texts
+Yes, It is Causation, and not Correlation: Models for Causal Inference in R
+Interviewer Training: Improving Your Team's Quant UX Interview Process
+Advanced Choice Modeling Surveys: Advanced Options Beyond Standard Conjoint and MaxDiff
+Segmentation: Running a Successful Segmentation Effort, from the Models through Team Politics
+UX Metrics Sprintmaster Training: How to Lead UX Metrics Sprints
