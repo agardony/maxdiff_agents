@@ -196,7 +196,11 @@ Temporary Items
 # Output files
 *.json
 *.html
+# Exception for specific report file
+!ground_truth_maxdiff_comparison/report.html
 *.csv
+# Exception for maxdiff data CSV files
+!ground_truth_maxdiff_comparison/maxdiff_data/*.csv
 reports/
 output/
 
