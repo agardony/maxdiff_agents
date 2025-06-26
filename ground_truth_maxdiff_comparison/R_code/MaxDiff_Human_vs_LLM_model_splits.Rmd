@@ -1,0 +1,1606 @@
+---
+title: "MaxDiff Analysis: Human vs LLM Model Splits"
+author: "Aaron Gardony <agardony@gmail.com>"
+date: "`r Sys.Date()`"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, 
+                      fig.width = 12, fig.height = 8, dpi = 300)
+```
+
+# Introduction
+
+This notebook compares MaxDiff survey results between human UX researchers (N=308) and LLM-simulated responses using 103 UX researcher personas across 3 different large language models (GPT, Claude, Gemini) with N=309 LLM users total. Both datasets evaluate the same 14 potential UX research classes. Statistical significance is assessed using a chance baseline derived from 1000 random datasets.
+
+**Note**: This version includes individual model comparisons to assess whether different LLMs show varying degrees of alignment with human preferences.
+
+Human data are available here: https://quantuxblog.com/individual-scores-in-choice-models-part-1-data-averages
+
+# Data Loading and Preparation
+
+## Load Required Libraries
+
+```{r libraries}
+# Core tidyverse
+library(tidyverse)
+library(readxl)
+
+# Visualization and styling
+library(ggplot2)
+library(ggtext)
+library(patchwork)
+library(scales)
+library(viridis)
+
+# Data manipulation and stats
+library(broom)
+library(janitor)
+
+# Tables
+library(kableExtra)
+library(gt)
+
+# Set ggplot theme
+theme_set(theme_minimal(base_size = 12, base_family = "sans"))
+
+# Define a color palette as a list
+colors <- list(
+  primary = "#2E86AB",
+  secondary = "#A23B72", 
+  accent = "#F18F01",
+  neutral = "#C73E1D",
+  success = "#06D6A0",
+  light_gray = "#F8F9FA",
+  medium_gray = "#6C757D",
+  gpt_color = "#10A37F",      # OpenAI green
+  claude_color = "#CC785C",    # Anthropic orange
+  gemini_color = "#4285F4"     # Google blue
+)
+```
+
+## Load Human Data (Original Study)
+
+```{r load_human_data}
+# Read Excel data with approach
+human_data <- read_excel("QUX Survey 2024 - Future Classes - MaxDiff Individual raw scores.xlsx") %>%
+  select(-Anchor) %>%  # Remove anchor column
+  clean_names()  # Clean column names
+
+# Assign friendly names using a named vector
+column_mapping <- c(
+  "Choice Models" = "choice_models",
+  "Surveys" = "surveys", 
+  "Log Sequences" = "log_sequences",
+  "Psychometrics" = "psychometrics",
+  "R Programming" = "r_programming",
+  "Pricing" = "pricing",
+  "UX Metrics" = "ux_metrics",
+  "Bayes Stats" = "bayes_stats",
+  "Text Analytics" = "text_analytics",
+  "Causal Models" = "causal_models",
+  "Interviewer-ing" = "interviewer_ing",
+  "Advanced Choice" = "advanced_choice",
+  "Segmentation" = "segmentation",
+  "Metrics Sprints" = "metrics_sprints"
+)
+
+# Apply the mapping by position (columns 3-16)
+names(human_data)[3:16] <- names(column_mapping)
+
+# Get class column names
+human_class_cols <- names(human_data)[3:16]
+
+# Data summary
+cat("Human data dimensions:", dim(human_data), "\n")
+cat("Number of respondents:", nrow(human_data), "\n")
+cat("Number of items:", length(human_class_cols), "\n")
+```
+
+## Load and Process LLM Data with Model Splits
+
+```{r load_llm_data}
+# Read LLM responses data
+llm_responses <- read_csv("maxdiff_responses_20250623_150739.csv")
+
+# Create a mapping of long names to short names
+name_mapping <- c(
+  "Choice Modeling Hands-On: Introduction to Conjoint Analysis and MaxDiff" = "Choice Models",
+  "Survey Masterclass: Intensive Review of Best Practices for Online Surveys" = "Surveys", 
+  "Log Sequence Analysis: Tools to Visualize, Model, and Understand Instrument Logs" = "Log Sequences",
+  "Psychometrics for Survey Scales: Reliability and Validity Assessment for Practitioners" = "Psychometrics",
+  "R-Intensive: In-Person R Programming Bootcamp for Social Scientists in Industry" = "R Programming",
+  "The Price is Right: Best Practices in Pricing Research" = "Pricing",
+  "HEART UX Metrics Deep Dive: From Best Practices to Leading HEART Workshops with Your Team" = "UX Metrics",
+  "Introduction to Bayesian Statistics: Linear and Hierarchical Linear Bayesian Models in R" = "Bayes Stats",
+  "Text Analytics 0 to 60: Sentiment Analysis and Topic Modeling with Natural Language Texts" = "Text Analytics",
+  "Yes, It is Causation, and not Correlation: Models for Causal Inference in R" = "Causal Models",
+  "Interviewer Training: Improving Your Team's Quant UX Interview Process" = "Interviewer-ing",
+  "Advanced Choice Modeling Surveys: Advanced Options Beyond Standard Conjoint and MaxDiff" = "Advanced Choice",
+  "Segmentation: Running a Successful Segmentation Effort, from the Models through Team Politics" = "Segmentation",
+  "UX Metrics Sprintmaster Training: How to Lead UX Metrics Sprints" = "Metrics Sprints"
+)
+
+# Calculate individual-level utility scores using tidyverse
+llm_responses <- llm_responses %>%
+  mutate(
+    user_id = str_c(model_name, persona_index, sep = "_"),
+    model_clean = case_when(
+      str_detect(tolower(model_name), "gpt") ~ "GPT",
+      str_detect(tolower(model_name), "claude") ~ "Claude", 
+      str_detect(tolower(model_name), "gemini") ~ "Gemini",
+      TRUE ~ model_name
+    )
+  )
+
+# Check model distribution
+llm_responses %>% 
+  count(model_clean, model_name) %>%
+  arrange(model_clean) %>%
+  print()
+
+# approach to calculate user-item scores
+calc_user_item_scores <- function(responses_df) {
+  # Get all unique items
+  all_items <- responses_df %>%
+    select(best_item_name, worst_item_name) %>%
+    pivot_longer(everything(), values_to = "item_name") %>%
+    filter(!is.na(item_name)) %>%
+    distinct(item_name) %>%
+    pull(item_name)
+  
+  # Count best/worst selections
+  best_counts <- responses_df %>%
+    filter(!is.na(best_item_name)) %>%
+    count(user_id, best_item_name, name = "best_count") %>%
+    rename(item_name = best_item_name)
+  
+  worst_counts <- responses_df %>%
+    filter(!is.na(worst_item_name)) %>%
+    count(user_id, worst_item_name, name = "worst_count") %>%
+    rename(item_name = worst_item_name)
+  
+  # Count appearances using map approach
+  appearance_counts <- responses_df %>%
+    filter(!is.na(trial_items)) %>%
+    select(user_id, trial_items) %>%
+    crossing(item_name = all_items) %>%
+    mutate(
+      appears = map2_lgl(trial_items, item_name, ~str_detect(.x, fixed(.y)))
+    ) %>%
+    filter(appears) %>%
+    count(user_id, item_name, name = "appearance_count")
+  
+  # Combine all counts
+  all_users <- unique(responses_df$user_id)
+  
+  results <- crossing(user_id = all_users, item_name = all_items) %>%
+    left_join(best_counts, by = c("user_id", "item_name")) %>%
+    left_join(worst_counts, by = c("user_id", "item_name")) %>%
+    left_join(appearance_counts, by = c("user_id", "item_name")) %>%
+    replace_na(list(best_count = 0, worst_count = 0, appearance_count = 0)) %>%
+    mutate(
+      best_rate = if_else(appearance_count > 0, best_count / appearance_count, 0),
+      worst_rate = if_else(appearance_count > 0, worst_count / appearance_count, 0),
+      utility_score = best_rate - worst_rate
+    )
+  
+  return(results)
+}
+
+# Calculate user-item scores for LLM data (preserving model info)
+llm_user_scores <- calc_user_item_scores(llm_responses)
+
+# Add model information back to scores
+model_mapping <- llm_responses %>%
+  select(user_id, model_clean) %>%
+  distinct()
+
+llm_user_scores <- llm_user_scores %>%
+  left_join(model_mapping, by = "user_id")
+
+# approach to create wide format data
+create_wide_format <- function(long_data, name_mapping, include_model = FALSE) {
+  # Prepare the base data
+  base_data <- long_data %>%
+    mutate(short_name = name_mapping[item_name]) %>%
+    filter(!is.na(short_name))
+  
+  # Handle column selection based on include_model flag
+  if (include_model) {
+    selected_data <- base_data %>%
+      select(user_id, short_name, utility_score, model_clean)
+    id_cols <- c("user_id", "model_clean")
+  } else {
+    selected_data <- base_data %>%
+      select(user_id, short_name, utility_score)
+    id_cols <- "user_id"
+  }
+  
+  # Create wide format
+  wide_data <- selected_data %>%
+    pivot_wider(
+      names_from = short_name,
+      values_from = utility_score,
+      values_fill = 0,
+      id_cols = all_of(id_cols)
+    ) %>%
+    rename(Record.ID = user_id)
+  
+  return(wide_data)
+}
+
+# Create wide format data for all LLM models combined
+llm_wide_all <- create_wide_format(llm_user_scores, name_mapping, include_model = TRUE)
+
+# Create separate datasets for each model
+llm_wide_gpt <- llm_user_scores %>%
+  filter(model_clean == "GPT") %>%
+  create_wide_format(name_mapping) 
+
+llm_wide_claude <- llm_user_scores %>%
+  filter(model_clean == "Claude") %>%
+  create_wide_format(name_mapping)
+
+llm_wide_gemini <- llm_user_scores %>%
+  filter(model_clean == "Gemini") %>%
+  create_wide_format(name_mapping)
+
+# Remove model column from combined dataset for consistency
+llm_wide_combined <- llm_wide_all %>%
+  select(-model_clean)
+
+# Find common items between datasets
+common_items <- intersect(human_class_cols, names(llm_wide_combined)[-1])
+
+# Create aligned datasets with only common items
+human_data_subset <- human_data %>%
+  select(record_id, all_of(common_items))
+
+llm_wide_combined <- llm_wide_combined %>%
+  select(Record.ID, all_of(common_items))
+
+llm_wide_gpt <- llm_wide_gpt %>%
+  select(Record.ID, all_of(common_items))
+
+llm_wide_claude <- llm_wide_claude %>%
+  select(Record.ID, all_of(common_items))
+
+llm_wide_gemini <- llm_wide_gemini %>%
+  select(Record.ID, all_of(common_items))
+
+cat("\nDataset dimensions:\n")
+cat("Human data:", dim(human_data_subset), "\n")
+cat("LLM Combined:", dim(llm_wide_combined), "\n")
+cat("GPT data:", dim(llm_wide_gpt), "\n")
+cat("Claude data:", dim(llm_wide_claude), "\n")
+cat("Gemini data:", dim(llm_wide_gemini), "\n")
+```
+
+# Visualization Functions
+
+## Updated Mean Plot Function
+
+```{r updated_plot_functions}
+# plot function for individual models
+plot_maxdiff<- function(data, title_suffix = "", color = colors$primary, subtitle = NULL) {
+  
+  # Prepare data for plotting
+  plot_data <- data %>%
+    select(-1) %>%  # Remove ID column
+    pivot_longer(everything(), names_to = "course", values_to = "score") %>%
+    group_by(course) %>%
+    summarise(
+      mean_score = mean(score, na.rm = TRUE),
+      se = sd(score, na.rm = TRUE) / sqrt(n()),
+      ci_lower = mean_score - 1.96 * se,
+      ci_upper = mean_score + 1.96 * se,
+      n = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(course = fct_reorder(course, mean_score))
+  
+  # Create the plot
+  ggplot(plot_data, aes(x = mean_score, y = course)) +
+    geom_errorbarh(
+      aes(xmin = ci_lower, xmax = ci_upper), 
+      height = 0.3, 
+      color = color, 
+      alpha = 0.7,
+      linewidth = 0.8
+    ) +
+    geom_point(
+      size = 4, 
+      color = color, 
+      alpha = 0.9
+    ) +
+    labs(
+      title = paste0("Course Interest Rankings ", title_suffix),
+      subtitle = subtitle %||% paste0("Points show mean scores with 95% CI (n=", plot_data$n[1], ")"),
+      x = "Average Utility Score",
+      y = NULL
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(size = 16, face = "bold", margin = margin(b = 8)),
+      plot.subtitle = element_text(size = 11, color = colors$medium_gray, margin = margin(b = 16)),
+      panel.grid.major.y = element_line(color = colors$light_gray, linewidth = 0.5),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.x = element_line(color = colors$light_gray, linewidth = 0.3),
+      axis.text.y = element_text(size = 10),
+      axis.text.x = element_text(size = 10),
+      axis.title.x = element_text(size = 11, margin = margin(t = 12))
+    ) +
+    scale_x_continuous(labels = label_number(accuracy = 0.1))
+}
+
+# comparison plot function for all models
+plot_comparison_all_models <- function(human_data, llm_combined, llm_gpt, llm_claude, llm_gemini) {
+  
+  # Prepare combined data for all models (excluding LLM Combined for cleaner 2x2 layout)
+  combined_data <- bind_rows(
+    human_data %>%
+      select(-1) %>%
+      pivot_longer(everything(), names_to = "course", values_to = "score") %>%
+      mutate(dataset = "Human"),
+    llm_gpt %>%
+      select(-1) %>%
+      pivot_longer(everything(), names_to = "course", values_to = "score") %>%
+      mutate(dataset = "GPT"),
+    llm_claude %>%
+      select(-1) %>%
+      pivot_longer(everything(), names_to = "course", values_to = "score") %>%
+      mutate(dataset = "Claude"),
+    llm_gemini %>%
+      select(-1) %>%
+      pivot_longer(everything(), names_to = "course", values_to = "score") %>%
+      mutate(dataset = "Gemini")
+  )
+  
+  # Calculate means for ordering (using human data)
+  course_order <- combined_data %>%
+    filter(dataset == "Human") %>%
+    group_by(course) %>%
+    summarise(mean_score = mean(score, na.rm = TRUE), .groups = "drop") %>%
+    arrange(mean_score) %>%
+    pull(course)
+  
+  # Prepare plot data
+  plot_data <- combined_data %>%
+    mutate(
+      course = factor(course, levels = course_order),
+      dataset = factor(dataset, levels = c("Human", "GPT", "Claude", "Gemini"))
+    ) %>%
+    group_by(course, dataset) %>%
+    summarise(
+      mean_score = mean(score, na.rm = TRUE),
+      se = sd(score, na.rm = TRUE) / sqrt(n()),
+      ci_lower = mean_score - 1.96 * se,
+      ci_upper = mean_score + 1.96 * se,
+      n = n(),
+      .groups = "drop"
+    )
+  
+  # Create the faceted plot
+  ggplot(plot_data, aes(x = mean_score, y = course, color = dataset)) +
+    geom_errorbarh(
+      aes(xmin = ci_lower, xmax = ci_upper), 
+      height = 0.3, 
+      alpha = 0.7,
+      linewidth = 0.8
+    ) +
+    geom_point(
+      size = 3.5, 
+      alpha = 0.9
+    ) +
+    facet_wrap(~ dataset, scales = "free_x", ncol = 2) +
+    scale_color_manual(
+      values = c(
+        "Human" = colors$primary,
+        "GPT" = colors$gpt_color,
+        "Claude" = colors$claude_color,
+        "Gemini" = colors$gemini_color
+      ),
+      guide = "none"  # Remove legend since facet titles show the models
+    ) +
+    labs(
+      title = "Course Preferences: Human vs Individual LLM Models",
+      subtitle = "Points show mean scores with 95% confidence intervals • Faceted by dataset",
+      x = "Average Utility Score",
+      y = NULL
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(size = 18, face = "bold", margin = margin(b = 8)),
+      plot.subtitle = element_text(size = 12, color = colors$medium_gray, margin = margin(b = 20)),
+      strip.text = element_text(size = 13, face = "bold", margin = margin(b = 8)),
+      panel.grid.major.y = element_line(color = colors$light_gray, linewidth = 0.5),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.x = element_line(color = colors$light_gray, linewidth = 0.3),
+      axis.text.y = element_text(size = 10),
+      axis.text.x = element_text(size = 10),
+      axis.title.x = element_text(size = 11, margin = margin(t = 12)),
+      strip.background = element_rect(fill = colors$light_gray, color = NA),
+      panel.spacing = unit(1.5, "lines")
+    ) +
+    scale_x_continuous(labels = label_number(accuracy = 0.1))
+}
+```
+
+# Results: Human vs LLM Model Comparisons
+
+## Individual Model Plots
+
+```{r individual_model_plots, fig.height=12}
+# Generate individual plots for each model
+human_plot <- plot_maxdiff(
+  human_data_subset, 
+  "(Human UX Researchers)", 
+  colors$primary
+)
+
+llm_combined_plot <- plot_maxdiff(
+  llm_wide_combined, 
+  "(LLM Combined)", 
+  colors$secondary
+)
+
+gpt_plot <- plot_maxdiff(
+  llm_wide_gpt, 
+  "(GPT)", 
+  colors$gpt_color
+)
+
+claude_plot <- plot_maxdiff(
+  llm_wide_claude, 
+  "(Claude)", 
+  colors$claude_color
+)
+
+gemini_plot <- plot_maxdiff(
+  llm_wide_gemini, 
+  "(Gemini)", 
+  colors$gemini_color
+)
+
+# Show them using patchwork in a 2x3 grid
+(human_plot | llm_combined_plot) / 
+(gpt_plot | claude_plot) / 
+(gemini_plot | plot_spacer()) +
+  plot_annotation(
+    title = "Course Interest Rankings: All Model Comparisons",
+    theme = theme(plot.title = element_text(size = 20, face = "bold", hjust = 0.5))
+  )
+```
+
+## Comprehensive Comparison Chart
+
+```{r comprehensive_comparison, fig.height=10}
+# Create the comprehensive comparison plot
+comprehensive_plot <- plot_comparison_all_models(
+  human_data_subset, 
+  llm_wide_combined, 
+  llm_wide_gpt, 
+  llm_wide_claude, 
+  llm_wide_gemini
+)
+
+comprehensive_plot
+```
+
+## Summary Statistics with Model Splits
+
+```{r summary_stats}
+# Calculate summary statistics for all models
+get_course_rankings <- function(data, source_name) {
+  data %>%
+    select(-1) %>%
+    pivot_longer(everything(), names_to = "course", values_to = "score") %>%
+    group_by(course) %>%
+    summarise(
+      mean_score = mean(score, na.rm = TRUE),
+      sd_score = sd(score, na.rm = TRUE),
+      n = n(),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(mean_score)) %>%
+    mutate(
+      rank = row_number(),
+      source = source_name
+    ) %>%
+    select(rank, course, mean_score, sd_score, n, source)
+}
+
+# Get rankings for all datasets
+human_rankings <- get_course_rankings(human_data_subset, "Human")
+llm_combined_rankings <- get_course_rankings(llm_wide_combined, "LLM_Combined")
+gpt_rankings <- get_course_rankings(llm_wide_gpt, "GPT")
+claude_rankings <- get_course_rankings(llm_wide_claude, "Claude")
+gemini_rankings <- get_course_rankings(llm_wide_gemini, "Gemini")
+
+# Create comprehensive rankings table
+all_rankings <- bind_rows(
+  human_rankings,
+  llm_combined_rankings,
+  gpt_rankings, 
+  claude_rankings,
+  gemini_rankings
+) %>%
+  select(source, rank, course, mean_score) %>%
+  pivot_wider(
+    names_from = source,
+    values_from = c(rank, mean_score),
+    names_sep = "_"
+  ) %>%
+  arrange(rank_Human) %>%
+  select(
+    course,
+    rank_Human, mean_score_Human,
+    rank_LLM_Combined, mean_score_LLM_Combined,
+    rank_GPT, mean_score_GPT,
+    rank_Claude, mean_score_Claude,
+    rank_Gemini, mean_score_Gemini
+  )
+
+# Display comprehensive rankings table
+comprehensive_table <- all_rankings %>%
+  gt() %>%
+  tab_header(
+    title = "Complete Rankings Comparison - All Models",
+    subtitle = "Courses ordered by Human preference ranking"
+  ) %>%
+  fmt_number(columns = starts_with("mean_score"), decimals = 3) %>%
+  cols_label(
+    course = "Course",
+    rank_Human = "Human",
+    mean_score_Human = "Score",
+    rank_LLM_Combined = "Combined",
+    mean_score_LLM_Combined = "Score", 
+    rank_GPT = "GPT",
+    mean_score_GPT = "Score",
+    rank_Claude = "Claude", 
+    mean_score_Claude = "Score",
+    rank_Gemini = "Gemini",
+    mean_score_Gemini = "Score"
+  ) %>%
+  tab_spanner(
+    label = "Human",
+    columns = c(rank_Human, mean_score_Human)
+  ) %>%
+  tab_spanner(
+    label = "LLM Combined", 
+    columns = c(rank_LLM_Combined, mean_score_LLM_Combined)
+  ) %>%
+  tab_spanner(
+    label = "GPT",
+    columns = c(rank_GPT, mean_score_GPT)
+  ) %>%
+  tab_spanner(
+    label = "Claude",
+    columns = c(rank_Claude, mean_score_Claude)
+  ) %>%
+  tab_spanner(
+    label = "Gemini", 
+    columns = c(rank_Gemini, mean_score_Gemini)
+  ) %>%
+  tab_style(
+    style = cell_fill(color = colors$light_gray),
+    locations = cells_column_labels()
+  ) %>%
+  tab_style(
+    style = cell_fill(color = colors$light_gray),
+    locations = cells_column_spanners()
+  ) %>%
+  tab_options(
+    table.font.size = 10,
+    heading.title.font.size = 16,
+    heading.subtitle.font.size = 12
+  )
+
+comprehensive_table
+```
+
+# Correlation Analysis
+
+## All Pairwise Correlations
+
+```{r correlations}
+# Create correlation matrix for all models
+create_correlation_matrix <- function() {
+  
+  # Prepare data for correlation analysis
+  datasets <- list(
+    "Human" = human_data_subset,
+    "LLM_Combined" = llm_wide_combined,
+    "GPT" = llm_wide_gpt,
+    "Claude" = llm_wide_claude,
+    "Gemini" = llm_wide_gemini
+  )
+  
+  # Get mean scores for each dataset
+  mean_scores <- map_dfr(datasets, function(data) {
+    data %>%
+      select(-1) %>%
+      pivot_longer(everything(), names_to = "course", values_to = "score") %>%
+      group_by(course) %>%
+      summarise(mean_score = mean(score, na.rm = TRUE), .groups = "drop")
+  }, .id = "dataset")
+  
+  # Get rankings for each dataset  
+  rankings <- map_dfr(datasets, function(data) {
+    get_course_rankings(data, "temp") %>%
+      select(course, rank)
+  }, .id = "dataset")
+  
+  # Create wide format for correlations
+  scores_wide <- mean_scores %>%
+    pivot_wider(names_from = dataset, values_from = mean_score)
+  
+  rankings_wide <- rankings %>%
+    pivot_wider(names_from = dataset, values_from = rank)
+  
+  # Calculate correlation matrices
+  score_cors <- cor(scores_wide[-1], method = "pearson")
+  rank_cors <- cor(rankings_wide[-1], method = "spearman")
+  
+  return(list(
+    score_correlations = score_cors,
+    rank_correlations = rank_cors,
+    courses = scores_wide$course
+  ))
+}
+
+# Calculate all correlations
+correlation_results <- create_correlation_matrix()
+
+# Display correlation matrices
+cat("## Pearson Score Correlations\n\n")
+correlation_results$score_correlations %>%
+  as_tibble(rownames = "Model") %>%
+  gt() %>%
+  tab_header(title = "Pearson Score Correlations Between All Models") %>%
+  fmt_number(columns = -Model, decimals = 3) %>%
+  data_color(
+    columns = -Model,
+    colors = scales::col_numeric(
+      palette = c("white", colors$primary),
+      domain = c(0, 1)
+    )
+  ) %>%
+  tab_options(table.font.size = 11)
+
+cat("\n## Spearman Rank Correlations\n\n") 
+correlation_results$rank_correlations %>%
+  as_tibble(rownames = "Model") %>%
+  gt() %>%
+  tab_header(title = "Spearman Rank Correlations Between All Models") %>%
+  fmt_number(columns = -Model, decimals = 3) %>%
+  data_color(
+    columns = -Model,
+    colors = scales::col_numeric(
+      palette = c("white", colors$secondary),
+      domain = c(0, 1)
+    )
+  ) %>%
+  tab_options(table.font.size = 11)
+
+# Extract key correlations for significance testing
+observed_correlations <- list(
+  human_llm_combined_rank = correlation_results$rank_correlations["Human", "LLM_Combined"],
+  human_llm_combined_score = correlation_results$score_correlations["Human", "LLM_Combined"],
+  human_gpt_rank = correlation_results$rank_correlations["Human", "GPT"],
+  human_gpt_score = correlation_results$score_correlations["Human", "GPT"],
+  human_claude_rank = correlation_results$rank_correlations["Human", "Claude"],
+  human_claude_score = correlation_results$score_correlations["Human", "Claude"],
+  human_gemini_rank = correlation_results$rank_correlations["Human", "Gemini"],
+  human_gemini_score = correlation_results$score_correlations["Human", "Gemini"]
+)
+
+cat("\n## Key Human-LLM Correlations\n\n")
+observed_correlations %>%
+  enframe(name = "comparison", value = "correlation") %>%
+  separate(comparison, into = c("models", "type"), sep = "_(?=rank|score)") %>%
+  pivot_wider(names_from = type, values_from = correlation) %>%
+  mutate(models = str_replace_all(models, "_", " vs ")) %>%
+  gt() %>%
+  tab_header(title = "Key Human-LLM Correlations") %>%
+  fmt_number(columns = c(rank, score), decimals = 3) %>%
+  cols_label(
+    models = "Comparison",
+    rank = "Rank Correlation",
+    score = "Score Correlation"
+  )
+```
+
+# Statistical Significance Testing
+
+## Generate Chance Baselines for All Models
+
+```{r chance_simulation}
+# approach to calculate chance correlation for specific model
+calc_chance_correlation_model <- function(chance_responses, human_rankings, name_mapping, common_items, model_filter = NULL) {
+  
+  # Filter by model if specified
+  if (!is.null(model_filter)) {
+    chance_responses <- chance_responses %>%
+      filter(model_clean == model_filter)
+  }
+  
+  chance_responses <- chance_responses %>%
+    mutate(user_id = str_c("CHANCE_", model_name, "_", persona_index))
+  
+  # Calculate user-item scores
+  chance_user_scores <- calc_user_item_scores(chance_responses)
+  
+  # Create wide format
+  chance_wide <- create_wide_format(chance_user_scores, name_mapping)
+  
+  # Ensure all common items are present
+  missing_items <- setdiff(common_items, names(chance_wide)[-1])
+  if (length(missing_items) > 0) {
+    chance_wide <- chance_wide %>%
+      bind_cols(
+        map_dfc(missing_items, ~tibble(!!.x := 0))
+      )
+  }
+  
+  # Select common items
+  chance_wide <- chance_wide %>%
+    select(Record.ID, all_of(common_items))
+  
+  # Calculate rankings
+  chance_rankings <- get_course_rankings(chance_wide, "Chance")
+  
+  # Merge with human data for comparison
+  comparison_chance <- human_rankings %>%
+    select(course, human_rank = rank, human_mean = mean_score) %>%
+    left_join(
+      chance_rankings %>% select(course, chance_rank = rank, chance_mean = mean_score),
+      by = "course"
+    )
+  
+  # Calculate correlations
+  rank_corr <- cor(comparison_chance$human_rank, comparison_chance$chance_rank, method = "spearman")
+  score_corr <- cor(comparison_chance$human_mean, comparison_chance$chance_mean)
+  
+  return(list(rank_corr = rank_corr, score_corr = score_corr))
+}
+
+# generate chance data function
+generate_chance_data <- function(responses_df, seed_value, all_item_names) {
+  set.seed(seed_value)
+  
+  responses_df %>%
+    mutate(
+      trial_items_parsed = map(trial_items, function(trial_string) {
+        if (is.na(trial_string)) return(character(0))
+        
+        # Find which items appear in this trial
+        items_present <- character(0)
+        for(item in all_item_names) {
+          if(str_detect(trial_string, fixed(item))) {
+            items_present <- c(items_present, item)
+          }
+        }
+        return(items_present)
+      }),
+      random_selection = map(trial_items_parsed, function(items) {
+        if (length(items) >= 2) {
+          sample(items, 2, replace = FALSE)
+        } else {
+          c(NA_character_, NA_character_)
+        }
+      }),
+      best_item_name = map_chr(random_selection, ~ .x[1]),
+      worst_item_name = map_chr(random_selection, ~ .x[2])
+    ) %>%
+    select(-trial_items_parsed, -random_selection)
+}
+
+# Check if chance_correlations_already exists
+if (!exists("chance_correlations")) {
+  
+  # Set up simulation parameters
+  n_simulations <- 1000
+  seeds_to_test <- sample(1:10000, n_simulations)
+  
+  cat("=== STARTING CHANCE BASELINE SIMULATION ===\n")
+  cat("Generating", n_simulations, "chance datasets for all model comparisons...\n")
+  cat("This will take longer due to multiple model calculations\n")
+  cat("Start time:", format(Sys.time(), "%H:%M:%S"), "\n\n")
+  
+  # Get all unique item names
+  all_item_names <- llm_responses %>%
+    select(best_item_name, worst_item_name) %>%
+    pivot_longer(everything(), values_to = "item_name") %>%
+    filter(!is.na(item_name)) %>%
+    distinct(item_name) %>%
+    pull(item_name)
+  
+  cat("Found", length(all_item_names), "unique item names for trial parsing\n\n")
+  
+  # Initialize results
+  chance_correlations_<- tibble(
+    seed = integer(n_simulations),
+    # Combined LLM correlations
+    combined_rank_correlation = numeric(n_simulations),
+    combined_score_correlation = numeric(n_simulations),
+    # Individual model correlations
+    gpt_rank_correlation = numeric(n_simulations),
+    gpt_score_correlation = numeric(n_simulations),
+    claude_rank_correlation = numeric(n_simulations),
+    claude_score_correlation = numeric(n_simulations),
+    gemini_rank_correlation = numeric(n_simulations),
+    gemini_score_correlation = numeric(n_simulations)
+  )
+  
+  # Record start time
+  start_time <- Sys.time()
+  
+  # Run simulation with progress tracking
+  for(i in seq_len(n_simulations)) {
+    # Progress reporting
+    if(i %% 50 == 0) {
+      elapsed <- difftime(Sys.time(), start_time, units = "secs")
+      rate <- i / as.numeric(elapsed)
+      remaining <- (n_simulations - i) / rate
+      
+      cat("Progress:", i, "/", n_simulations, 
+          str_glue("({round(100 * i / n_simulations, 1)}%)"), 
+          "- Elapsed:", round(elapsed, 1), "sec", 
+          "- ETA:", round(remaining, 1), "sec remaining\n")
+    }
+    
+    seed_value <- seeds_to_test[i]
+    
+    # Generate chance data
+    chance_data <- generate_chance_data(llm_responses, seed_value, all_item_names)
+    
+    # Calculate correlations for combined LLM
+    correlations_combined <- calc_chance_correlation_model(chance_data, human_rankings, name_mapping, common_items)
+    
+    # Calculate correlations for each individual model
+    correlations_gpt <- calc_chance_correlation_model(chance_data, human_rankings, name_mapping, common_items, "GPT")
+    correlations_claude <- calc_chance_correlation_model(chance_data, human_rankings, name_mapping, common_items, "Claude")
+    correlations_gemini <- calc_chance_correlation_model(chance_data, human_rankings, name_mapping, common_items, "Gemini")
+    
+    # Store results
+    chance_correlations$seed[i] <- seed_value
+    chance_correlations$combined_rank_correlation[i] <- correlations_combined$rank_corr
+    chance_correlations$combined_score_correlation[i] <- correlations_combined$score_corr
+    chance_correlations$gpt_rank_correlation[i] <- correlations_gpt$rank_corr
+    chance_correlations$gpt_score_correlation[i] <- correlations_gpt$score_corr
+    chance_correlations$claude_rank_correlation[i] <- correlations_claude$rank_corr
+    chance_correlations$claude_score_correlation[i] <- correlations_claude$score_corr
+    chance_correlations$gemini_rank_correlation[i] <- correlations_gemini$rank_corr
+    chance_correlations$gemini_score_correlation[i] <- correlations_gemini$score_corr
+  }
+  
+  # Final completion message
+  total_time <- difftime(Sys.time(), start_time, units = "secs")
+  cat("\n=== SIMULATION COMPLETED ===\n")
+  cat("Total time:", round(total_time, 1), "seconds\n")
+  cat("Average time per simulation:", round(total_time / n_simulations, 2), "seconds\n")
+  cat("Successfully generated", n_simulations, "chance datasets for all models\n\n")
+  
+} else {
+  cat("=== CHANCE CORRELATIONS ALREADY EXISTS ===\n")
+  cat("Skipping simulation - using existing chance_correlations_object\n")
+  cat("Object contains", nrow(chance_correlations), "simulations\n\n")
+}
+```
+
+## Statistical Significance Analysis
+
+```{r significance_analysis}
+# Calculate confidence intervals and p-values for all models
+calculate_significance_stats <- function(chance_correlations, observed_correlations) {
+  
+  # Prepare significance results
+  models <- c("combined", "gpt", "claude", "gemini")
+  correlation_types <- c("rank", "score")
+  
+  significance_results <- tibble()
+  
+  for (model in models) {
+    for (corr_type in correlation_types) {
+      
+      # Get column names for chance data
+      chance_col <- paste0(model, "_", corr_type, "_correlation")
+      observed_key <- paste0("human_", if(model == "combined") "llm_combined" else model, "_", corr_type)
+      
+      # Get chance distribution and observed value
+      chance_dist <- chance_correlations[[chance_col]]
+      observed_val <- observed_correlations[[observed_key]]
+      
+      # Calculate statistics
+      ci <- quantile(chance_dist, c(0.025, 0.975))
+      p_value <- mean(abs(chance_dist) >= abs(observed_val))
+      
+      # Add to results
+      significance_results <- bind_rows(
+        significance_results,
+        tibble(
+          Model = str_to_title(model),
+          Type = str_to_title(corr_type),
+          Observed = observed_val,
+          Chance_Mean = mean(chance_dist),
+          Chance_SD = sd(chance_dist),
+          CI_Lower = ci[1],
+          CI_Upper = ci[2],
+          P_Value = p_value,
+          Significant = p_value < 0.05
+        )
+      )
+    }
+  }
+  
+  return(significance_results)
+}
+
+# Calculate significance statistics
+significance_stats <- calculate_significance_stats(chance_correlations, observed_correlations)
+
+# Create comprehensive significance table
+significance_table<- significance_stats %>%
+  arrange(Model, Type) %>%
+  gt() %>%
+  tab_header(
+    title = "Statistical Significance Analysis",
+    subtitle = str_glue("Human vs LLM Models - Based on {n_simulations} chance simulations")
+  ) %>%
+  fmt_number(columns = 3:8, decimals = 4) %>%
+  tab_style(
+    style = cell_fill(color = colors$success),
+    locations = cells_body(columns = Significant, rows = Significant == TRUE)
+  ) %>%
+  tab_style(
+    style = cell_fill(color = colors$neutral),
+    locations = cells_body(columns = Significant, rows = Significant == FALSE)
+  ) %>%
+  tab_style(
+    style = cell_fill(color = colors$light_gray),
+    locations = cells_column_labels()
+  ) %>%
+  data_color(
+    columns = P_Value,
+    colors = scales::col_numeric(
+      palette = c(colors$success, "white", colors$neutral),
+      domain = c(0, 0.1)
+    )
+  ) %>%
+  tab_footnote(
+    footnote = "Green = Significant (p < 0.05), Red = Not Significant",
+    locations = cells_column_labels(columns = Significant)
+  ) %>%
+  tab_options(
+    table.font.size = 10,
+    heading.title.font.size = 16,
+    heading.subtitle.font.size = 12
+  )
+
+significance_table
+```
+
+## Model Performance Summary
+
+```{r model_performance_summary}
+# Create model performance summary
+model_performance <- significance_stats %>%
+  group_by(Model) %>%
+  summarise(
+    Rank_Correlation = Observed[Type == "Rank"],
+    Rank_P_Value = P_Value[Type == "Rank"],
+    Rank_Significant = Significant[Type == "Rank"],
+    Score_Correlation = Observed[Type == "Score"],
+    Score_P_Value = P_Value[Type == "Score"],
+    Score_Significant = Significant[Type == "Score"],
+    Overall_Performance = case_when(
+      Rank_Significant & Score_Significant ~ "Excellent",
+      Rank_Significant | Score_Significant ~ "Good",
+      max(Rank_Correlation, Score_Correlation) > 0.5 ~ "Moderate",
+      TRUE ~ "Poor"
+    ),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(Rank_Correlation))
+
+# Model performance table
+performance_table <- model_performance %>%
+  gt() %>%
+  tab_header(
+    title = "LLM Model Performance vs Human Preferences",
+    subtitle = "Ordered by rank correlation strength"
+  ) %>%
+  fmt_number(columns = c(Rank_Correlation, Score_Correlation), decimals = 3) %>%
+  fmt_number(columns = c(Rank_P_Value, Score_P_Value), decimals = 4) %>%
+  cols_label(
+    Model = "Model",
+    Rank_Correlation = "Rank Corr",
+    Rank_P_Value = "P-Value",
+    Rank_Significant = "Sig?",
+    Score_Correlation = "Score Corr", 
+    Score_P_Value = "P-Value",
+    Score_Significant = "Sig?",
+    Overall_Performance = "Overall"
+  ) %>%
+  tab_spanner(
+    label = "Rank Correlation",
+    columns = c(Rank_Correlation, Rank_P_Value, Rank_Significant)
+  ) %>%
+  tab_spanner(
+    label = "Score Correlation",
+    columns = c(Score_Correlation, Score_P_Value, Score_Significant)
+  ) %>%
+  data_color(
+    columns = Overall_Performance,
+    colors = c(
+      "Excellent" = colors$success,
+      "Good" = colors$accent,
+      "Moderate" = colors$secondary,
+      "Poor" = colors$neutral
+    )
+  ) %>%
+  tab_style(
+    style = cell_fill(color = colors$light_gray),
+    locations = cells_column_labels()
+  ) %>%
+  tab_style(
+    style = cell_fill(color = colors$light_gray),
+    locations = cells_column_spanners()
+  ) %>%
+  tab_options(
+    table.font.size = 11,
+    heading.title.font.size = 16,
+    heading.subtitle.font.size = 12
+  )
+
+performance_table
+```
+
+# Visualization of Results
+
+## Comprehensive Significance Plots
+
+```{r significance_plots, fig.height=16}
+# Create significance plot function
+create_significance_plot <- function(chance_data, observed_value, model_name, correlation_type, color) {
+  
+  # Calculate statistics
+  ci_bounds <- quantile(chance_data, c(0.025, 0.975))
+  p_val <- mean(abs(chance_data) >= abs(observed_value))
+  
+  # Prepare data
+  plot_data <- tibble(correlation = chance_data)
+  
+  ggplot(plot_data, aes(x = correlation)) +
+    geom_histogram(
+      bins = 40, 
+      fill = color, 
+      alpha = 0.7, 
+      color = "white",
+      linewidth = 0.3
+    ) +
+    geom_vline(
+      xintercept = observed_value, 
+      color = colors$neutral, 
+      linewidth = 1.5,
+      linetype = "solid"
+    ) +
+    geom_vline(
+      xintercept = ci_bounds, 
+      color = colors$primary, 
+      linewidth = 1,
+      linetype = "dashed", 
+      alpha = 0.8
+    ) +
+    geom_vline(
+      xintercept = 0, 
+      color = colors$medium_gray, 
+      linewidth = 0.8,
+      linetype = "dotted", 
+      alpha = 0.7
+    ) +
+    annotate(
+      "text", 
+      x = observed_value, 
+      y = Inf, 
+      label = str_glue("Observed\n{round(observed_value, 3)}"),
+      vjust = 1.2, 
+      hjust = ifelse(observed_value > 0, -0.1, 1.1),
+      color = colors$neutral,
+      size = 3,
+      fontface = "bold"
+    ) +
+    labs(
+      title = str_glue("{model_name} {correlation_type} vs Chance"),
+      subtitle = str_glue(
+        "Observed: {round(observed_value, 3)} • P-value: {round(p_val, 4)} • ",
+        "{if_else(p_val < 0.05, 'SIGNIFICANT', 'Not Significant')}"
+      ),
+      x = str_glue("{correlation_type} Correlation"),
+      y = "Frequency"
+    ) +
+    theme_minimal(base_size = 10) +
+    theme(
+      plot.title = element_text(size = 12, face = "bold", margin = margin(b = 3)),
+      plot.subtitle = element_text(size = 9, color = colors$medium_gray, margin = margin(b = 10)),
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(color = colors$light_gray, linewidth = 0.3),
+      axis.title = element_text(size = 9),
+      axis.text = element_text(size = 8)
+    ) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+    scale_x_continuous(labels = number_format(accuracy = 0.01))
+}
+
+# Create all significance plots
+plots_list <- list()
+
+# Model colors
+model_colors <- list(
+  "Combined" = colors$secondary,
+  "GPT" = colors$gpt_color,
+  "Claude" = colors$claude_color,
+  "Gemini" = colors$gemini_color
+)
+
+# Generate plots for each model and correlation type
+models <- c("Combined", "GPT", "Claude", "Gemini")
+for (model in models) {
+  model_lower <- str_to_lower(model)
+  if (model == "Combined") model_lower <- "combined"
+  
+  # Rank correlation plot
+  rank_plot <- create_significance_plot(
+    chance_correlations[[paste0(model_lower, "_rank_correlation")]],
+    observed_correlations[[paste0("human_", if(model == "Combined") "llm_combined" else str_to_lower(model), "_rank")]],
+    model,
+    "Rank",
+    model_colors[[model]]
+  )
+  
+  # Score correlation plot  
+  score_plot <- create_significance_plot(
+    chance_correlations[[paste0(model_lower, "_score_correlation")]],
+    observed_correlations[[paste0("human_", if(model == "Combined") "llm_combined" else str_to_lower(model), "_score")]],
+    model,
+    "Score", 
+    model_colors[[model]]
+  )
+  
+  plots_list[[paste0(model, "_rank")]] <- rank_plot
+  plots_list[[paste0(model, "_score")]] <- score_plot
+}
+
+# Arrange plots in a grid
+significance_grid <- wrap_plots(plots_list, ncol = 2) +
+  plot_annotation(
+    title = "Statistical Significance Testing: All Models vs Human Preferences",
+    subtitle = "Red line = Observed correlation • Blue lines = 95% Chance CI",
+    theme = theme(
+      plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 12, color = colors$medium_gray, hjust = 0.5)
+    )
+  )
+
+significance_grid
+```
+
+## Rankings Scatter Plots
+
+```{r scatter_plots, fig.height=12}
+# Create scatter plot function
+create_model_scatter <- function(human_rankings, model_rankings, model_name, color, observed_rank_corr, p_value) {
+  
+  # Prepare comparison data
+  comparison_data <- human_rankings %>%
+    select(course, human_rank = rank, human_mean = mean_score) %>%
+    left_join(
+      model_rankings %>% select(course, model_rank = rank, model_mean = mean_score),
+      by = "course"
+    ) %>%
+    mutate(course_short = str_trunc(course, 12))
+  
+  # Create significance annotation
+  significance_annotation <- str_glue(
+    "Spearman r = {round(observed_rank_corr, 3)}",
+    "{if_else(p_value < 0.05, '**', '')}",
+    "\nP-value = {round(p_value, 4)}"
+  )
+  
+  ggplot(comparison_data, aes(x = human_rank, y = model_rank)) +
+    geom_abline(
+      intercept = 0, 
+      slope = 1, 
+      linetype = "dashed", 
+      color = colors$medium_gray, 
+      alpha = 0.7,
+      linewidth = 1
+    ) +
+    geom_point(
+      size = 3, 
+      alpha = 0.8, 
+      color = color
+    ) +
+    geom_text(
+      aes(label = course_short), 
+      hjust = 0, 
+      vjust = 0, 
+      size = 2.5, 
+      nudge_x = 0.15, 
+      nudge_y = 0.15,
+      color = colors$medium_gray,
+      check_overlap = TRUE
+    ) +
+    annotate(
+      "text",
+      x = 2,
+      y = 12.5,
+      label = significance_annotation,
+      size = 3.5,
+      hjust = 0,
+      vjust = 1,
+      color = color,
+      fontface = "bold",
+      lineheight = 1.2
+    ) +
+    labs(
+      title = str_glue("Human vs {model_name}"),
+      x = "Human Ranking",
+      y = str_glue("{model_name} Ranking")
+    ) +
+    theme_minimal(base_size = 10) +
+    theme(
+      plot.title = element_text(size = 12, face = "bold", hjust = 0.5, margin = margin(b = 10)),
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(color = colors$light_gray, linewidth = 0.3),
+      axis.title = element_text(size = 10),
+      axis.text = element_text(size = 9)
+    ) +
+    scale_x_continuous(breaks = 1:14, limits = c(0.5, 14.5)) +
+    scale_y_continuous(breaks = 1:14, limits = c(0.5, 14.5)) +
+    coord_fixed()
+}
+
+# Create scatter plots for each model
+scatter_combined <- create_model_scatter(
+  human_rankings, llm_combined_rankings, "LLM Combined", colors$secondary,
+  observed_correlations$human_llm_combined_rank,
+  significance_stats$P_Value[significance_stats$Model == "Combined" & significance_stats$Type == "Rank"]
+)
+
+scatter_gpt <- create_model_scatter(
+  human_rankings, gpt_rankings, "GPT", colors$gpt_color,
+  observed_correlations$human_gpt_rank,
+  significance_stats$P_Value[significance_stats$Model == "Gpt" & significance_stats$Type == "Rank"]
+)
+
+scatter_claude <- create_model_scatter(
+  human_rankings, claude_rankings, "Claude", colors$claude_color,
+  observed_correlations$human_claude_rank,
+  significance_stats$P_Value[significance_stats$Model == "Claude" & significance_stats$Type == "Rank"]
+)
+
+scatter_gemini <- create_model_scatter(
+  human_rankings, gemini_rankings, "Gemini", colors$gemini_color,
+  observed_correlations$human_gemini_rank,
+  significance_stats$P_Value[significance_stats$Model == "Gemini" & significance_stats$Type == "Rank"]
+)
+
+# Combine scatter plots
+scatter_grid <- (scatter_combined | scatter_gpt) / 
+                (scatter_claude | scatter_gemini) +
+  plot_annotation(
+    title = "Human vs LLM Model Rankings Comparison",
+    subtitle = "Perfect agreement falls on diagonal • ** indicates significance at p < 0.05",
+    theme = theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 11, color = colors$medium_gray, hjust = 0.5)
+    )
+  )
+
+scatter_grid
+```
+
+# Executive Summary Dashboard
+
+## Summary Metrics
+
+```{r dashboard, echo=FALSE}
+# Create summary metrics
+summary_metrics <- tibble(
+  Category = c(
+    rep("Sample Sizes", 5),
+    rep("Best Performing Model", 2),
+    rep("Statistical Results", 4)
+  ),
+  Metric = c(
+    "Human Participants",
+    "Total LLM Participants", 
+    "GPT Participants",
+    "Claude Participants",
+    "Gemini Participants",
+    "Highest Rank Correlation",
+    "Highest Score Correlation",
+    "Significant Rank Correlations",
+    "Significant Score Correlations",
+    "Chance Simulations",
+    "Common Courses Evaluated"
+  ),
+  Value = c(
+    nrow(human_data_subset),
+    nrow(llm_wide_combined),
+    nrow(llm_wide_gpt),
+    nrow(llm_wide_claude),
+    nrow(llm_wide_gemini),
+    model_performance$Model[which.max(model_performance$Rank_Correlation)],
+    model_performance$Model[which.max(model_performance$Score_Correlation)],
+    sum(significance_stats$Significant[significance_stats$Type == "Rank"]),
+    sum(significance_stats$Significant[significance_stats$Type == "Score"]),
+    n_simulations,
+    length(common_items)
+  ),
+  Details = c(
+    "UX Researchers",
+    "Across 3 Models",
+    "OpenAI Model",
+    "Anthropic Model", 
+    "Google Model",
+    str_glue("r = {round(max(model_performance$Rank_Correlation), 3)}"),
+    str_glue("r = {round(max(model_performance$Score_Correlation), 3)}"),
+    str_glue("out of {nrow(model_performance)} models"),
+    str_glue("out of {nrow(model_performance)} models"),
+    "Random Baseline",
+    "Overlapping Items"
+  )
+)
+
+# Create dashboard table
+dashboard_table <- summary_metrics %>%
+  gt() %>%
+  tab_header(
+    title = "MaxDiff Analysis - Executive Dashboard",
+    subtitle = "Human vs Individual LLM Model Comparison"
+  ) %>%
+  tab_row_group(
+    label = "Statistical Results",
+    rows = Category == "Statistical Results"
+  ) %>%
+  tab_row_group(
+    label = "Best Performing Model", 
+    rows = Category == "Best Performing Model"
+  ) %>%
+  tab_row_group(
+    label = "Sample Sizes",
+    rows = Category == "Sample Sizes"
+  ) %>%
+  tab_style(
+    style = cell_fill(color = colors$light_gray),
+    locations = cells_column_labels()
+  ) %>%
+  tab_style(
+    style = cell_fill(color = colors$success),
+    locations = cells_body(
+      columns = Value,
+      rows = str_detect(Metric, "Significant") & as.numeric(Value) > 0
+    )
+  ) %>%
+  cols_label(
+    Category = "Category",
+    Metric = "Key Metric",
+    Value = "Result",
+    Details = "Additional Info"
+  ) %>%
+  tab_options(
+    table.font.size = 12,
+    heading.title.font.size = 18,
+    heading.subtitle.font.size = 14,
+    row_group.font.weight = "bold"
+  )
+
+dashboard_table
+```
+
+## Key Findings and Strategic Implications
+
+```{r insights, echo=FALSE}
+# Calculate insights
+best_rank_model <- model_performance$Model[which.max(model_performance$Rank_Correlation)]
+best_score_model <- model_performance$Model[which.max(model_performance$Score_Correlation)]
+worst_performing_model <- model_performance$Model[which.min(model_performance$Rank_Correlation)]
+
+significant_models_rank <- significance_stats %>% 
+  filter(Type == "Rank", Significant == TRUE) %>% 
+  pull(Model)
+
+significant_models_score <- significance_stats %>% 
+  filter(Type == "Score", Significant == TRUE) %>% 
+  pull(Model)
+
+# Get top disagreements by model
+biggest_disagreements_by_model <- function(human_rank, model_rank, model_name) {
+  comparison_df <- human_rankings %>%
+    select(course, human_rank = rank) %>%
+    left_join(
+      model_rank %>% select(course, model_rank = rank),
+      by = "course"
+    ) %>%
+    mutate(rank_difference = abs(model_rank - human_rank)) %>%
+    slice_max(rank_difference, n = 2)
+  
+  return(comparison_df)
+}
+
+gpt_disagreements <- biggest_disagreements_by_model(human_rankings, gpt_rankings, "GPT")
+claude_disagreements <- biggest_disagreements_by_model(human_rankings, claude_rankings, "Claude")
+gemini_disagreements <- biggest_disagreements_by_model(human_rankings, gemini_rankings, "Gemini")
+
+# Create insights text
+cat("## 🎯 KEY FINDINGS\n\n")
+
+cat("### **Sample & Methodology**\n")
+cat("• **Human participants:**", nrow(human_data_subset), "UX researchers\n")
+cat("• **LLM participants:**", nrow(llm_wide_combined), "total across 3 model architectures\n")
+cat("  - GPT:", nrow(llm_wide_gpt), "participants\n")
+cat("  - Claude:", nrow(llm_wide_claude), "participants\n") 
+cat("  - Gemini:", nrow(llm_wide_gemini), "participants\n")
+cat("• **Statistical validation:**", n_simulations, "chance simulations per model\n\n")
+
+cat("### **Model Performance Rankings**\n")
+cat("🥇 **Best Overall:** ", best_rank_model, " (rank correlation)\n")
+cat("🥈 **Runner-up:** ", best_score_model, " (score correlation)\n") 
+if (best_rank_model != best_score_model) {
+  cat("📊 **Different models excel at rank vs score correlation**\n")
+}
+cat("🥉 **Needs Improvement:** ", worst_performing_model, "\n\n")
+
+cat("### **Statistical Significance Results**\n")
+if (length(significant_models_rank) > 0) {
+  cat("✅ **Significant Rank Correlations:** ", paste(significant_models_rank, collapse = ", "), "\n")
+} else {
+  cat("❌ **No models achieved significant rank correlations**\n")
+}
+
+if (length(significant_models_score) > 0) {
+  cat("✅ **Significant Score Correlations:** ", paste(significant_models_score, collapse = ", "), "\n")
+} else {
+  cat("❌ **No models achieved significant score correlations**\n")
+}
+
+cat("\n### **Individual Model Insights**\n")
+
+# Performance details for each model
+for (i in 1:nrow(model_performance)) {
+  model_row <- model_performance[i, ]
+  cat("**", model_row$Model, ":**\n")
+  cat("  - Rank correlation:", round(model_row$Rank_Correlation, 3), 
+      if_else(model_row$Rank_Significant, " ✅", " ❌"), "\n")
+  cat("  - Score correlation:", round(model_row$Score_Correlation, 3), 
+      if_else(model_row$Score_Significant, " ✅", " ❌"), "\n")
+  cat("  - Overall performance:", model_row$Overall_Performance, "\n\n")
+}
+
+cat("### **Biggest Model Disagreements with Humans**\n")
+cat("**GPT disagreements:**\n")
+for (j in 1:nrow(gpt_disagreements)) {
+  row <- gpt_disagreements[j, ]
+  cat("  • ", row$course, ": ", row$rank_difference, " rank difference\n")
+}
+
+cat("**Claude disagreements:**\n") 
+for (j in 1:nrow(claude_disagreements)) {
+  row <- claude_disagreements[j, ]
+  cat("  • ", row$course, ": ", row$rank_difference, " rank difference\n")
+}
+
+cat("**Gemini disagreements:**\n")
+for (j in 1:nrow(gemini_disagreements)) {
+  row <- gemini_disagreements[j, ]
+  cat("  • ", row$course, ": ", row$rank_difference, " rank difference\n")
+}
+
+cat("\n## 💡 STRATEGIC IMPLICATIONS BY MODEL\n\n")
+
+# Determine overall success
+total_significant <- length(unique(c(significant_models_rank, significant_models_score)))
+total_models <- nrow(model_performance) - 1  # Excluding combined
+
+if (total_significant >= 2) {
+  cat("### ✅ **STRONG MODEL VALIDATION**\n")
+  cat("• Multiple LLM architectures show statistically significant alignment with human preferences\n")
+  cat("• **Model diversity validated:** Different architectures can simulate human UX researcher preferences\n")
+  cat("• **Architectural insights:** Performance varies by model, suggesting different strengths\n\n")
+  
+  cat("### 🚀 **Practical Applications by Model**\n")
+  
+  # Recommendations for best performing models
+  if (best_rank_model %in% significant_models_rank) {
+    cat("• **", best_rank_model, " (Best Rank Correlation):** Ideal for ranking/prioritization tasks\n")
+  }
+  
+  if (best_score_model %in% significant_models_score) {
+    cat("• **", best_score_model, " (Best Score Correlation):** Optimal for preference intensity measurement\n")
+  }
+  
+  cat("• **Multi-model ensemble:** Combine models for robust preference prediction\n")
+  cat("• **Model selection:** Choose optimal model based on specific research needs\n")
+  cat("• **Cost optimization:** Use best-performing model for budget efficiency\n\n")
+  
+} else if (total_significant >= 1) {
+  cat("### ⚡ **MODERATE MODEL VALIDATION**\n")
+  cat("• At least one LLM architecture shows significant alignment\n")
+  cat("• **Selective application:** Use validated models for preference simulation\n")
+  cat("• **Model improvement opportunity:** Enhance prompts/personas for weaker models\n\n")
+  
+} else {
+  cat("### ⚠️ **MIXED MODEL RESULTS**\n")
+  cat("• No individual models achieved statistical significance\n")
+  cat("• **Combined approach:** Aggregate models may still provide value\n")
+  cat("• **Methodology refinement needed:** Improve persona design and prompting\n\n")
+}
+
+cat("### 🔧 **Model-Specific Recommendations**\n\n")
+
+# Specific recommendations for each model
+for (i in 1:nrow(model_performance)) {
+  model_row <- model_performance[i, ]
+  if (model_row$Model == "Combined") next  # Skip combined for individual recommendations
+  
+  cat("**", model_row$Model, " Recommendations:**\n")
+  
+  if (model_row$Overall_Performance == "Excellent") {
+    cat("  ✅ **Ready for production:** Use for UX research preference simulation\n")
+    cat("  ✅ **High confidence:** Suitable for critical decision support\n")
+  } else if (model_row$Overall_Performance == "Good") {
+    cat("  ⚡ **Promising candidate:** Use with validation for important decisions\n")
+    cat("  ⚡ **Selective application:** Best for specific use cases\n") 
+  } else if (model_row$Overall_Performance == "Moderate") {
+    cat("  ⚠️ **Needs improvement:** Refine prompts and persona design\n")
+    cat("  ⚠️ **Limited use:** Supplement with human validation\n")
+  } else {
+    cat("  ❌ **Requires significant work:** Fundamental prompt/approach revision needed\n")
+    cat("  ❌ **Not recommended:** Use alternative models or human research\n")
+  }
+  cat("\n")
+}
+
+cat("### ⚠️ **Important Limitations & Considerations**\n")
+cat("• **Model-specific biases:** Each LLM may have systematic preference patterns\n")
+cat("• **Validation requirement:** Always validate critical decisions with human participants\n") 
+cat("• **Context dependency:** Model performance may vary for different types of UX research\n")
+cat("• **Temporal stability:** Monitor model performance over time as architectures evolve\n")
+cat("• **Cost-benefit analysis:** Balance model performance with computational costs\n\n")
+
+cat("## 📊 **METHODOLOGICAL VALIDATION**\n")
+cat("✅ **Comprehensive model comparison** across 3 major LLM architectures\n")
+cat("✅ **Robust statistical framework** with", n_simulations, "chance simulations per model\n")
+cat("✅ **Individual model insights** enable targeted model selection\n")
+cat("✅ **Reproducible methodology** with transparent statistical testing\n")
+cat("✅ **Practical implementation guidance** based on empirical performance data\n\n")
+
+# Final performance summary
+cat("## 🏆 **FINAL MODEL PERFORMANCE SUMMARY**\n\n")
+cat("| Model | Rank Correlation | Score Correlation | Overall Rating |\n")
+cat("|-------|-----------------|------------------|----------------|\n")
+for (i in 1:nrow(model_performance)) {
+  model_row <- model_performance[i, ]
+  cat("| ", model_row$Model, " | ", 
+      round(model_row$Rank_Correlation, 3), 
+      if_else(model_row$Rank_Significant, " ✅", " ❌"), " | ",
+      round(model_row$Score_Correlation, 3),
+      if_else(model_row$Score_Significant, " ✅", " ❌"), " | ",
+      model_row$Overall_Performance, " |\n")
+}
+```
+
+# Conclusion
+
+This analysis reveals important differences between LLM architectures in their ability to simulate human UX researcher preferences. The model-specific insights provide actionable guidance for practitioners seeking to incorporate LLM-based preference simulation into their UX research workflows.
+
+**Key Takeaway:** LLM model selection matters significantly for preference prediction accuracy, with clear performance differences between architectures that should inform practical implementation decisions.
