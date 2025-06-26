@@ -9,11 +9,13 @@ This tool analyzes persona descriptions by clustering them based on semantic sim
 ## Features
 
 - **Fast Semantic Clustering**: Uses Model2Vec for fast, high-quality text embeddings
+- **Zero-Shot Classification**: Optional advanced classification across multiple dimensions (seniority, industry, expertise, etc.)
+- **Hybrid Clustering Approaches**: Combine semantic embeddings with classification features for enhanced analysis
 - **Automatic Optimization**: Finds optimal number of clusters using silhouette analysis
 - **Multiple Clustering Methods**: Supports K-means and DBSCAN algorithms with configurable parameters
 - **Rich Interactive Visualizations**: 2D scatter plots with PCA or t-SNE, featuring hover tooltips and transparency controls
 - **Comprehensive Analysis**: Detailed cluster statistics and common theme extraction
-- **File Output**: Generates cluster assignments and dissimilarity matrix files
+- **File Output**: Generates cluster assignments, classification results, and dissimilarity matrix files
 - **Similarity Search**: Find semantically similar personas
 - **Flexible Input**: Command-line and programmatic interfaces
 - **Quality Metrics**: Silhouette scores and cluster quality assessments with intelligent recommendations
@@ -77,8 +79,52 @@ pip install -r requirements.txt
 If you prefer to install packages individually:
 
 ```bash
+# Core dependencies only
 uv pip install model2vec pandas scikit-learn matplotlib seaborn numpy plotly
+
+# Include zero-shot classification features
+uv pip install model2vec pandas scikit-learn matplotlib seaborn numpy plotly torch transformers tokenizers
 ```
+
+## Zero-Shot Classification Features
+
+The advanced version includes zero-shot classification capabilities that can automatically categorize personas across multiple dimensions without training data.
+
+### Available Classification Dimensions
+
+- **seniority**: entry level, junior, associate, senior, principal, staff, director
+- **industry**: healthcare, financial services, gaming, enterprise tools, consumer tech, e-commerce, education, government, automotive, media, social media, developer tools, logistics, travel, hardware/IoT
+- **expertise**: quantitative research, qualitative research, research operations, mixed methods, strategic research, prototyping, analytics, experimental design
+- **priorities**: learning, strategic influence, team building, process optimization, stakeholder management, compliance, innovation, quality assurance
+- **challenges**: technical/data, organizational/political, resource constraints, regulatory, stakeholder alignment, scale/complexity, user access, time pressure
+
+### Zero-Shot Classification Usage
+
+```bash
+# Basic classification with default dimensions (seniority, industry, expertise)
+python enhanced_persona_clustering.py UXR_personas.txt --use-classification
+
+# Custom dimensions
+python enhanced_persona_clustering.py UXR_personas.txt --use-classification --dimensions seniority industry
+
+# Color visualization by classification dimension
+python enhanced_persona_clustering.py UXR_personas.txt --use-classification --color-by seniority
+
+# Hybrid approach combining semantic and classification features
+python enhanced_persona_clustering.py UXR_personas.txt --use-classification --classification-method hybrid
+```
+
+### Classification Methods
+
+1. **Semantic (Default)**: Uses Model2Vec embeddings for clustering, with classification as additional analysis
+2. **Classification**: Clusters based purely on zero-shot classification features
+3. **Hybrid**: Combines both semantic embeddings and classification features
+
+### Model Information
+
+- **Classification Model**: `typeform/distilbert-base-uncased-mnli`
+- **Performance**: Typically 60-80% confidence on persona classifications
+- **Processing Speed**: ~1-2 seconds per persona
 
 ## Quick Start
 

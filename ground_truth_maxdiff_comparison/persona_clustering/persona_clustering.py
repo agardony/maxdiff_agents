@@ -6,6 +6,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score
 from sklearn.manifold import TSNE
+from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.express as px
@@ -16,9 +17,92 @@ import re
 import os
 from datetime import datetime
 import sys
+import warnings
 
-# Fix tokenizers parallelism warning
+# Import transformers for zero-shot classification
+try:
+    from transformers import pipeline
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
+    warnings.warn("transformers not installed. Zero-shot classification features will be unavailable.")
+
+# Fix tokenizers parallelism warning and multiprocessing issues
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["OMP_NUM_THREADS"] = "1"  # Limit OpenMP threads
+os.environ["MKL_NUM_THREADS"] = "1"  # Limit MKL threads
+
+# Add multiprocessing fix for macOS
+import multiprocessing
+if hasattr(multiprocessing, 'set_start_method'):
+    try:
+        multiprocessing.set_start_method('spawn', force=True)
+    except RuntimeError:
+        pass  # Already set
+
+# Classification dimensions and their labels
+CLASSIFICATION_DIMENSIONS = {
+    "seniority": [
+        "junior level researcher",
+        "associate level researcher",
+        "senior level researcher",
+        "principal level researcher",
+        "staff level researcher",
+        "director level researcher",
+        "ux researcher"
+    ],
+    "industry": [
+        "healthcare and medical technology",
+        "financial services and banking",
+        "gaming and entertainment",
+        "business software and enterprise tools",
+        "consumer technology products",
+        "e-commerce and retail",
+        "education technology",
+        "government and civic technology",
+        "automotive technology",
+        "media and content platforms",
+        "social media platforms",
+        "developer tools and platforms",
+        "logistics and supply chain",
+        "travel and hospitality",
+        "hardware and IoT devices",
+        "non-profit and social impact",
+        "cybersecurity",
+        "consulting",
+        "climate technology",
+        "two-sided marketplaces"
+    ],
+    "expertise": [
+        "quantitative research and data analysis",
+        "research operations and process management",
+        "mixed methods research",
+        "prototyping and design research",
+        "analytics and metrics",
+        "strategic research and planning",
+        "experimental design and A/B testing"
+    ],
+    "priorities": [
+        "learning and skill development",
+        "strategic influence and business impact",
+        "team building and mentoring",
+        "process optimization and efficiency",
+        "compliance and regulatory adherence",
+        "quality assurance and rigor",
+        "innovation and methodology development",
+        "stakeholder management and communication"
+    ],
+    "challenges": [
+        "technical and data challenges",
+        "organizational and political challenges",
+        "resource and budget constraints",
+        "regulatory and compliance requirements",
+        "stakeholder alignment and buy-in",
+        "scale and complexity management",
+        "user access and recruitment",
+        "time pressure and quick turnaround"
+    ]
+}
 
 def load_and_explore_personas(file_path):
     """
@@ -109,6 +193,247 @@ def preprocess_personas(personas):
     print(f"✓ {len(cleaned_personas)} personas ready for analysis")
     
     return cleaned_personas
+
+def setup_zero_shot_classifier():
+    """
+    Initialize the zero-shot classification model
+    """
+    if not TRANSFORMERS_AVAILABLE:
+        raise ImportError("transformers package required for zero-shot classification. Install with: pip install transformers torch")
+    
+    print(f"\n{'='*60}")
+    print(f"INITIALIZING ZERO-SHOT CLASSIFIER")
+    print(f"{'='*60}")
+    print("Loading BART-large-MNLI model for classification...")
+    print("This may take a moment on first run...")
+    
+    try:
+        # Add these settings to prevent multiprocessing issues on macOS
+        import torch
+        torch.set_num_threads(1)  # Limit threads to prevent conflicts
+        
+        # Check if GPU is available and use it (prefer MPS on Mac, then CUDA)
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            device = "mps"
+            device_name = "GPU (MPS)"
+        elif torch.cuda.is_available():
+            device = 0
+            device_name = "GPU (CUDA)"
+        else:
+            device = -1  # CPU
+            device_name = "CPU"
+        print(f"Device set to use {device_name.lower()}")
+        
+        classifier = pipeline(
+            "zero-shot-classification", 
+            model="facebook/bart-large-mnli",
+            device=device,  # Use GPU if available, CPU otherwise
+            torch_dtype=torch.float32,  # Explicit dtype for compatibility
+            return_all_scores=True  # Get all scores for better analysis
+        )
+        print("✓ Zero-shot classifier loaded successfully")
+        return classifier
+    except Exception as e:
+        print(f"✗ Error loading classifier: {e}")
+        print("Trying fallback approach with CPU...")
+        
+        # Fallback: try with CPU if GPU fails
+        try:
+            import torch
+            torch.set_num_threads(1)
+            
+            classifier = pipeline(
+                "zero-shot-classification", 
+                model="facebook/bart-large-mnli",
+                device=-1,  # Force CPU for fallback
+                framework="pt"  # Explicitly use PyTorch
+            )
+            print("✓ Zero-shot classifier loaded successfully (CPU fallback mode)")
+            return classifier
+        except Exception as e2:
+            print(f"✗ Fallback also failed: {e2}")
+            print("Make sure you have torch and transformers installed:")
+            print("  pip install torch transformers")
+            raise
+
+def classify_personas_by_dimensions(personas, dimensions, classifier):
+    """
+    Classify personas across specified dimensions using zero-shot classification
+    """
+    print(f"\n{'='*60}")
+    print(f"ZERO-SHOT CLASSIFICATION")
+    print(f"{'='*60}")
+    print(f"Classifying {len(personas)} personas across {len(dimensions)} dimensions:")
+    for dim in dimensions:
+        print(f"  • {dim} ({len(CLASSIFICATION_DIMENSIONS[dim])} categories)")
+    
+    results = {}
+    
+    for dimension in dimensions:
+        print(f"\nClassifying dimension: {dimension}")
+        labels = CLASSIFICATION_DIMENSIONS[dimension]
+        dimension_results = []
+        
+        # Process in smaller batches to avoid memory issues
+        batch_size = 5  # Smaller batch size for stability
+        total_batches = (len(personas) + batch_size - 1) // batch_size
+        
+        print(f"Processing in {total_batches} batches of {batch_size}...")
+        
+        for batch_idx in range(0, len(personas), batch_size):
+            batch_end = min(batch_idx + batch_size, len(personas))
+            batch_personas = personas[batch_idx:batch_end]
+            
+            print(f"  Batch {batch_idx//batch_size + 1}/{total_batches}: personas {batch_idx}-{batch_end-1}")
+            
+            for i, persona in enumerate(batch_personas):
+                actual_idx = batch_idx + i
+                try:
+                    # Add error handling and retry logic
+                    max_retries = 3
+                    for retry in range(max_retries):
+                        try:
+                            result = classifier(persona, labels)
+                            dimension_results.append({
+                                'label': result['labels'][0],
+                                'confidence': result['scores'][0],
+                                'all_scores': dict(zip(result['labels'], result['scores']))
+                            })
+                            break  # Success, exit retry loop
+                        except Exception as retry_error:
+                            if retry < max_retries - 1:
+                                print(f"    Retry {retry + 1} for persona {actual_idx}...")
+                                import time
+                                time.sleep(1)  # Brief pause before retry
+                                continue
+                            else:
+                                raise retry_error
+                                
+                except Exception as e:
+                    print(f"    Warning: Classification failed for persona {actual_idx}: {e}")
+                    # Fallback to unknown classification
+                    dimension_results.append({
+                        'label': 'unknown',
+                        'confidence': 0.0,
+                        'all_scores': {'unknown': 1.0}
+                    })
+            
+            # Brief pause between batches to prevent memory buildup
+            if batch_idx + batch_size < len(personas):
+                import time
+                time.sleep(0.5)
+        
+        results[dimension] = dimension_results
+        
+        # Show classification summary
+        labels_count = Counter([r['label'] for r in dimension_results])
+        avg_confidence = np.mean([r['confidence'] for r in dimension_results])
+        print(f"  ✓ Average confidence: {avg_confidence:.3f}")
+        print(f"  ✓ Top categories: {dict(labels_count.most_common(3))}")
+    
+    print(f"\n✓ Zero-shot classification complete across all dimensions")
+    return results
+
+def create_classification_features(classification_results, method='categorical'):
+    """
+    Convert classification results into feature vectors for clustering
+    
+    Parameters:
+    -----------
+    classification_results : dict
+        Results from classify_personas_by_dimensions
+    method : str
+        'categorical' - use label encodings
+        'confidence' - use confidence score vectors
+        'hybrid' - combine both approaches
+    """
+    print(f"\n{'='*60}")
+    print(f"CREATING CLASSIFICATION FEATURE VECTORS")
+    print(f"{'='*60}")
+    print(f"Method: {method}")
+    
+    n_personas = len(next(iter(classification_results.values())))
+    dimensions = list(classification_results.keys())
+    
+    if method == 'categorical':
+        # One-hot encode the predicted labels
+        feature_vectors = []
+        feature_names = []
+        
+        for persona_idx in range(n_personas):
+            persona_features = []
+            
+            for dimension in dimensions:
+                # Get all unique labels for this dimension
+                all_labels = CLASSIFICATION_DIMENSIONS[dimension]
+                
+                # Create one-hot encoding for this persona's prediction
+                dimension_features = np.zeros(len(all_labels))
+                predicted_label = classification_results[dimension][persona_idx]['label']
+                if predicted_label in all_labels:
+                    label_idx = all_labels.index(predicted_label)
+                    dimension_features[label_idx] = 1.0
+                
+                persona_features.extend(dimension_features)
+                
+                # Add feature names (only for first persona)
+                if persona_idx == 0:
+                    feature_names.extend([f"{dimension}_{label}" for label in all_labels])
+            
+            feature_vectors.append(persona_features)
+        
+        feature_matrix = np.array(feature_vectors)
+        
+    elif method == 'confidence':
+        # Use confidence scores for all possible labels
+        feature_matrix = []
+        feature_names = []
+        
+        for persona_idx in range(n_personas):
+            persona_features = []
+            
+            for dimension in dimensions:
+                all_labels = CLASSIFICATION_DIMENSIONS[dimension]
+                result = classification_results[dimension][persona_idx]
+                
+                # Create confidence vector for all possible labels
+                confidence_vector = []
+                for label in all_labels:
+                    confidence = result['all_scores'].get(label, 0.0)
+                    confidence_vector.append(confidence)
+                
+                persona_features.extend(confidence_vector)
+                
+                # Add feature names (only for first persona)
+                if persona_idx == 0:
+                    feature_names.extend([f"{dimension}_conf_{label}" for label in all_labels])
+            
+            feature_matrix.append(persona_features)
+        
+        feature_matrix = np.array(feature_matrix)
+        
+    elif method == 'hybrid':
+        # Combine categorical and confidence approaches
+        print("  Creating categorical features...")
+        cat_features, _ = create_classification_features(classification_results, 'categorical')
+        print("  Creating confidence features...")
+        conf_features, _ = create_classification_features(classification_results, 'confidence')
+        
+        # Combine features
+        feature_matrix = np.hstack([cat_features, conf_features])
+        feature_names = None  # Would be too long to track
+        
+    else:
+        raise ValueError(f"Unknown method: {method}")
+    
+    # Normalize features
+    scaler = StandardScaler()
+    feature_matrix = scaler.fit_transform(feature_matrix)
+    
+    print(f"✓ Created feature matrix shape: {feature_matrix.shape}")
+    print(f"✓ Features per persona: {feature_matrix.shape[1]}")
+    
+    return feature_matrix, feature_names
 
 def cluster_personas_with_model2vec(personas, model_name="minishlab/potion-base-8M"):
     """
@@ -259,7 +584,7 @@ def perform_clustering(embeddings, personas, n_clusters=None, method='kmeans', e
     
     return cluster_labels, n_clusters
 
-def analyze_persona_clusters(personas, cluster_labels, n_clusters):
+def analyze_persona_clusters(personas, cluster_labels, n_clusters, classification_results=None):
     """
     Analyze and interpret the persona clusters
     """
@@ -275,6 +600,15 @@ def analyze_persona_clusters(personas, cluster_labels, n_clusters):
         
         print(f"\n--- Cluster {cluster_id} ({len(cluster_personas)} personas) ---")
         print(f"Persona indices: {cluster_indices[:10]}" + ("..." if len(cluster_indices) > 10 else ""))
+        
+        # Show classification breakdown if available
+        if classification_results:
+            print("Classification breakdown:")
+            for dimension, results in classification_results.items():
+                cluster_classifications = [results[i]['label'] for i in cluster_indices]
+                classification_counts = Counter(cluster_classifications)
+                top_classifications = classification_counts.most_common(3)
+                print(f"  {dimension}: {dict(top_classifications)}")
         
         # Show sample personas from this cluster
         for i, persona in enumerate(cluster_personas[:3]):  # Show first 3
@@ -299,6 +633,13 @@ def analyze_persona_clusters(personas, cluster_labels, n_clusters):
             'indices': cluster_indices,
             'common_words': common_words
         }
+        
+        # Add classification info if available
+        if classification_results:
+            cluster_analysis[cluster_id]['classifications'] = {}
+            for dimension, results in classification_results.items():
+                cluster_classifications = [results[i] for i in cluster_indices]
+                cluster_analysis[cluster_id]['classifications'][dimension] = cluster_classifications
     
     # Handle noise points for DBSCAN
     noise_personas = [personas[i] for i, label in enumerate(cluster_labels) if label == -1]
@@ -311,7 +652,8 @@ def analyze_persona_clusters(personas, cluster_labels, n_clusters):
     
     return cluster_analysis
 
-def visualize_persona_clusters(embeddings, cluster_labels, personas, method='pca'):
+def visualize_persona_clusters(embeddings, cluster_labels, personas, method='pca', 
+                             classification_results=None, color_by='cluster'):
     """
     Visualize persona clusters in 2D using Plotly with interactive hover
     """
@@ -319,6 +661,7 @@ def visualize_persona_clusters(embeddings, cluster_labels, personas, method='pca
     print(f"CREATING INTERACTIVE VISUALIZATION")
     print(f"{'='*60}")
     print(f"Generating 2D visualization using {method.upper()}...")
+    print(f"Coloring by: {color_by}")
     
     # Reduce dimensionality for visualization
     if method == 'pca':
@@ -344,6 +687,21 @@ def visualize_persona_clusters(embeddings, cluster_labels, personas, method='pca
     # Prepare data for Plotly
     x_coords = embeddings_2d[:, 0]
     y_coords = embeddings_2d[:, 1]
+    
+    # Determine coloring scheme
+    if color_by == 'cluster':
+        color_values = cluster_labels
+        color_labels = [f"Cluster {label}" if label != -1 else "Noise" for label in cluster_labels]
+        color_title = "Cluster"
+    elif color_by in CLASSIFICATION_DIMENSIONS and classification_results:
+        color_values = [classification_results[color_by][i]['label'] for i in range(len(personas))]
+        color_labels = color_values
+        color_title = color_by.title()
+    else:
+        # Fallback to cluster coloring
+        color_values = cluster_labels
+        color_labels = [f"Cluster {label}" if label != -1 else "Noise" for label in cluster_labels]
+        color_title = "Cluster"
     
     # Create shorter hover text that's more readable
     hover_texts = []
@@ -374,43 +732,52 @@ def visualize_persona_clusters(embeddings, cluster_labels, personas, method='pca
         wrapped_preview = "<br>".join(wrapped_lines)
         persona_previews.append(wrapped_preview)
         
-        # Keep hover text concise and readable
-        hover_text = f"Persona {i} | Cluster {cluster_labels[i]}"
+        # Create detailed hover text with classification info if available
+        hover_components = [f"Persona {i}"]
+        
+        if classification_results:
+            for dimension, results in classification_results.items():
+                label = results[i]['label']
+                confidence = results[i]['confidence']
+                hover_components.append(f"{dimension.title()}: {label} ({confidence:.2f})")
+        
+        # Join with line breaks for vertical stacking instead of horizontal
+        hover_text = "<br>".join(hover_components)
         hover_texts.append(hover_text)
     
-    # Get unique cluster labels and create color mapping
-    unique_labels = sorted(set(cluster_labels))
+    # Get unique color values and create color mapping
+    unique_values = sorted(set(color_values))
     
     # Create the plotly figure
     fig = go.Figure()
     
     # Define colors for clusters (using a nice color palette)
     colors = px.colors.qualitative.Set3
-    if len(unique_labels) > len(colors):
+    if len(unique_values) > len(colors):
         # Repeat colors if we have more clusters than available colors
-        colors = colors * (len(unique_labels) // len(colors) + 1)
+        colors = colors * (len(unique_values) // len(colors) + 1)
     
-    # Add scatter plot for each cluster
-    for i, label in enumerate(unique_labels):
-        if label == -1:
+    # Add scatter plot for each unique value
+    for i, value in enumerate(unique_values):
+        if value == -1:
             # Noise points (for DBSCAN)
-            cluster_name = 'Noise/Outliers'
+            group_name = 'Noise/Outliers'
             color = 'black'
             symbol = 'x'
         else:
-            cluster_name = f'Cluster {label}'
+            group_name = str(value)
             color = colors[i % len(colors)]
             symbol = 'circle'
         
-        # Get indices for this cluster
-        mask = cluster_labels == label
-        cluster_indices = np.where(mask)[0]
+        # Get indices for this group
+        mask = np.array(color_values) == value
+        group_indices = np.where(mask)[0]
         
         fig.add_trace(go.Scatter(
             x=x_coords[mask],
             y=y_coords[mask],
             mode='markers',
-            name=cluster_name,
+            name=group_name,
             marker=dict(
                 color=color,
                 size=12,
@@ -418,21 +785,24 @@ def visualize_persona_clusters(embeddings, cluster_labels, personas, method='pca
                 line=dict(width=1, color='black'),
                 opacity=0.5  # Set to 50% transparency
             ),
-            hovertemplate="<b>Persona %{customdata[0]}</b><br>" +
-                         f"<b>Cluster:</b> %{{customdata[1]}}<br>" +
+            hovertemplate="<b>%{customdata[0]}</b><br>" +
                          f"<b>{x_label}:</b> %{{x:.3f}}<br>" +
                          f"<b>{y_label}:</b> %{{y:.3f}}<br>" +
-                         "<b>Description:</b><br>%{customdata[2]}" +
+                         "<b>Description:</b><br>%{customdata[1]}" +
                          "<extra></extra>",  # This removes the trace name from hover
-            customdata=[[idx, cluster_labels[idx], persona_previews[idx]] for idx in cluster_indices],
+            customdata=[[hover_texts[idx], persona_previews[idx]] for idx in group_indices],
             showlegend=True
         ))
     
     # Update layout for better appearance and hover readability
+    title_text = f'Semantic Clustering of Personas (Colored by {color_title})'
+    if color_by != 'cluster':
+        title_text += f'<br><sub>Zero-shot classification dimension: {color_by}</sub>'
+    
     fig.update_layout(
         title={
-            'text': 'Semantic Clustering of Personas<br>' + 
-                   '<sub>Hover over points to see persona details • Click legend to toggle clusters</sub>',
+            'text': title_text + '<br>' + 
+                   '<sub>Hover over points to see persona details • Click legend to toggle groups</sub>',
             'x': 0.5,
             'xanchor': 'center',
             'font': {'size': 18}
@@ -448,14 +818,18 @@ def visualize_persona_clusters(embeddings, cluster_labels, personas, method='pca
             y=0.99,
             xanchor="left",
             x=1.01,
-            font=dict(size=12)
+            font=dict(size=12),
+            title=None  # Remove legend title for cleaner look
         ),
         margin=dict(r=200, l=80, t=100, b=80),  # Make room for legend and title
         hoverlabel=dict(
-            bgcolor="rgba(255, 255, 255, 0.7)",  # Much more transparent background
-            bordercolor="rgba(0, 0, 0, 0.7)",     # Semi-transparent border
-            font_size=11,
-            font_family="Arial, sans-serif",
+            bgcolor='rgba(255,255,255,0.75)',  # 75% transparent white background
+            bordercolor='rgba(0,0,0,0.3)',     # 30% transparent black border
+            font=dict(
+                size=11,
+                family="Arial, sans-serif",
+                color='black'
+            ),
             align="left",
             namelength=-1
         )
@@ -465,19 +839,52 @@ def visualize_persona_clusters(embeddings, cluster_labels, personas, method='pca
     fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
     fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
     
+    # No additional layout updates needed - CSS injection handles transparency
+    
     print("  ✓ Interactive visualization ready")
     print("  Opening in browser...")
     print("  💡 Hover over points to see persona details!")
     print("  💡 Click legend items to show/hide clusters!")
     print("  💡 Use zoom and pan tools for detailed exploration!")
     
-    # Show the plot
-    fig.show()
+    # Show the plot with custom config for transparency
+    config = {
+        'displayModeBar': True,
+        'displaylogo': False,
+        'modeBarButtonsToRemove': ['pan2d', 'lasso2d']
+    }
+    fig.show(config=config)
     
-    # Also save as HTML file
+    # Also save as HTML file with CSS injection for transparent hover boxes
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    html_file = f"persona_clusters_visualization_{timestamp}.html"
-    fig.write_html(html_file)
+    color_suffix = f"_{color_by}" if color_by != 'cluster' else ""
+    html_file = f"persona_clusters_visualization{color_suffix}_{timestamp}.html"
+    
+    # Write HTML with custom CSS for transparent hover boxes
+    html_string = fig.to_html(include_plotlyjs=True)
+    
+    # Add CSS to make hover boxes transparent using the suggested method
+    css_injection = """
+    <style>
+    .hovertext { 
+        fill-opacity: 0.4 !important; 
+        stroke-opacity: 1 !important;
+        background-color: rgba(255, 255, 255, 0.4) !important;
+        border-color: rgba(0, 0, 0, 0.3) !important;
+    }
+    .hoverlayer .hovertext {
+        background-color: rgba(255, 255, 255, 0.4) !important;
+        border-color: rgba(0, 0, 0, 0.3) !important;
+    }
+    </style>
+    """
+    
+    # Insert CSS before closing head tag
+    html_string = html_string.replace('</head>', css_injection + '</head>')
+    
+    with open(html_file, 'w', encoding='utf-8') as f:
+        f.write(html_string)
+    
     print(f"  ✓ Visualization saved as: {html_file}")
     
     return embeddings_2d
@@ -506,7 +913,7 @@ def calculate_dissimilarity_matrix(embeddings):
     
     return dissimilarity_matrix
 
-def save_results(cluster_labels, dissimilarity_matrix, output_dir="results"):
+def save_results(cluster_labels, dissimilarity_matrix, classification_results=None, output_dir="results"):
     """
     Save clustering results to files
     """
@@ -528,6 +935,12 @@ def save_results(cluster_labels, dissimilarity_matrix, output_dir="results"):
         'cluster_id': cluster_labels
     })
     
+    # Add classification results if available
+    if classification_results:
+        for dimension, results in classification_results.items():
+            cluster_df[f'{dimension}_label'] = [r['label'] for r in results]
+            cluster_df[f'{dimension}_confidence'] = [r['confidence'] for r in results]
+    
     cluster_file = os.path.join(output_dir, f"persona_clusters_{timestamp}.csv")
     cluster_df.to_csv(cluster_file, index=False)
     print(f"✓ Saved: {os.path.basename(cluster_file)}")
@@ -538,11 +951,32 @@ def save_results(cluster_labels, dissimilarity_matrix, output_dir="results"):
     pd.DataFrame(dissimilarity_matrix).to_csv(dissimilarity_file, index=False)
     print(f"✓ Saved: {os.path.basename(dissimilarity_file)}")
     
+    # Save detailed classification results if available
+    classification_file = None
+    if classification_results:
+        print("Saving detailed classification results...")
+        classification_data = []
+        for i in range(len(cluster_labels)):
+            row = {'persona_index': i, 'cluster_id': cluster_labels[i]}
+            for dimension, results in classification_results.items():
+                result = results[i]
+                row[f'{dimension}_label'] = result['label']
+                row[f'{dimension}_confidence'] = result['confidence']
+                # Add all scores for transparency
+                for label, score in result['all_scores'].items():
+                    row[f'{dimension}_{label}_score'] = score
+            classification_data.append(row)
+        
+        classification_df = pd.DataFrame(classification_data)
+        classification_file = os.path.join(output_dir, f"classification_details_{timestamp}.csv")
+        classification_df.to_csv(classification_file, index=False)
+        print(f"✓ Saved: {os.path.basename(classification_file)}")
+    
     print(f"✓ All results saved to: {os.path.abspath(output_dir)}")
     
-    return cluster_file, dissimilarity_file
+    return cluster_file, dissimilarity_file, classification_file
 
-def generate_cluster_summary_report(cluster_analysis, total_personas):
+def generate_cluster_summary_report(cluster_analysis, total_personas, classification_results=None):
     """
     Generate a summary report of the clustering results
     """
@@ -556,9 +990,27 @@ def generate_cluster_summary_report(cluster_analysis, total_personas):
     # Cluster size distribution
     sizes = [analysis['size'] for analysis in cluster_analysis.values()]
     print(f"\nCluster size statistics:")
-    print(f"Average cluster size: {np.mean(sizes):.1f}")
-    print(f"Largest cluster: {max(sizes)} personas")
-    print(f"Smallest cluster: {min(sizes)} personas")
+    
+    if len(sizes) > 0:
+        print(f"Average cluster size: {np.mean(sizes):.1f}")
+        print(f"Largest cluster: {max(sizes)} personas")
+        print(f"Smallest cluster: {min(sizes)} personas")
+    else:
+        print("No clusters found - all points classified as noise/outliers")
+        print("💡 Consider adjusting clustering parameters:")
+        print("   • For DBSCAN: increase eps or decrease min_samples")
+        print("   • For K-means: check if data is suitable for clustering")
+    
+    # Classification distribution if available
+    if classification_results:
+        print(f"\nClassification summary across all personas:")
+        for dimension, results in classification_results.items():
+            all_labels = [r['label'] for r in results]
+            label_counts = Counter(all_labels)
+            avg_confidence = np.mean([r['confidence'] for r in results])
+            print(f"{dimension.title()}:")
+            print(f"  Average confidence: {avg_confidence:.3f}")
+            print(f"  Distribution: {dict(label_counts.most_common(5))}")
     
     # Most common words across all clusters
     all_words = []
@@ -574,7 +1026,9 @@ def generate_cluster_summary_report(cluster_analysis, total_personas):
 def main_clustering_pipeline(file_path, model_name="minishlab/potion-base-8M", 
                            n_clusters=None, clustering_method='kmeans', 
                            visualization_method='pca', output_dir="results",
-                           eps=0.3, min_samples=2):
+                           eps=0.3, min_samples=2, use_classification=False,
+                           classification_dimensions=None, classification_method='semantic',
+                           color_by='cluster'):
     """
     Main pipeline for clustering persona descriptions
     
@@ -596,6 +1050,15 @@ def main_clustering_pipeline(file_path, model_name="minishlab/potion-base-8M",
         DBSCAN parameter: maximum distance between points in the same cluster
     min_samples : int, default=2
         DBSCAN parameter: minimum number of points to form a cluster
+    use_classification : bool, default=False
+        Whether to use zero-shot classification features
+    classification_dimensions : list, optional
+        List of dimensions to classify on (from CLASSIFICATION_DIMENSIONS keys)
+    classification_method : str, default='semantic'
+        How to use classification: 'semantic' (Model2Vec only), 'classification' (zero-shot only), 
+        'hybrid' (combine both)
+    color_by : str, default='cluster'
+        What to color visualization by ('cluster' or any classification dimension)
     
     Returns:
     --------
@@ -608,41 +1071,99 @@ def main_clustering_pipeline(file_path, model_name="minishlab/potion-base-8M",
         # Step 2: Preprocess personas (no deduplication)
         cleaned_personas = preprocess_personas(personas)
         
-        # Step 3: Generate embeddings using Model2Vec
-        embeddings, model = cluster_personas_with_model2vec(cleaned_personas, model_name)
+        # Step 3: Initialize classification if requested
+        classification_results = None
+        classifier = None
         
-        # Step 4: Calculate dissimilarity matrix
+        if use_classification and classification_dimensions:
+            if not TRANSFORMERS_AVAILABLE:
+                print("⚠️  Warning: transformers not available, falling back to semantic clustering only")
+                use_classification = False
+            else:
+                classifier = setup_zero_shot_classifier()
+                classification_results = classify_personas_by_dimensions(
+                    cleaned_personas, classification_dimensions, classifier
+                )
+        
+        # Step 4: Choose clustering approach based on method
+        if classification_method == 'semantic' or not use_classification:
+            # Use Model2Vec embeddings only
+            print(f"\nUsing semantic embeddings for clustering...")
+            embeddings, model = cluster_personas_with_model2vec(cleaned_personas, model_name)
+            
+        elif classification_method == 'classification' and use_classification:
+            # Use zero-shot classification features only
+            print(f"\nUsing classification features for clustering...")
+            embeddings, feature_names = create_classification_features(
+                classification_results, method='hybrid'
+            )
+            model = classifier  # Store classifier as model for consistency
+            
+        elif classification_method == 'hybrid' and use_classification:
+            # Combine both approaches
+            print(f"\nUsing hybrid approach (semantic + classification)...")
+            semantic_embeddings, model = cluster_personas_with_model2vec(cleaned_personas, model_name)
+            classification_embeddings, _ = create_classification_features(
+                classification_results, method='confidence'
+            )
+            
+            # Combine embeddings (weighted)
+            semantic_weight = 0.7  # Give more weight to semantic features
+            classification_weight = 0.3
+            
+            # Normalize both embedding types
+            semantic_norm = semantic_embeddings / np.linalg.norm(semantic_embeddings, axis=1, keepdims=True)
+            classification_norm = classification_embeddings / np.linalg.norm(classification_embeddings, axis=1, keepdims=True)
+            
+            embeddings = np.hstack([
+                semantic_norm * semantic_weight,
+                classification_norm * classification_weight
+            ])
+            print(f"✓ Combined embeddings shape: {embeddings.shape}")
+            
+        else:
+            # Default fallback
+            embeddings, model = cluster_personas_with_model2vec(cleaned_personas, model_name)
+        
+        # Step 5: Calculate dissimilarity matrix
         dissimilarity_matrix = calculate_dissimilarity_matrix(embeddings)
         
-        # Step 5: Find optimal number of clusters (if not specified and using kmeans)
+        # Step 6: Find optimal number of clusters (if not specified and using kmeans)
         if n_clusters is None and clustering_method == 'kmeans':
             optimal_k, silhouette_scores = find_optimal_clusters(embeddings)
         else:
             optimal_k = n_clusters
             silhouette_scores = None
         
-        # Step 6: Perform clustering
+        # Step 7: Perform clustering
         cluster_labels, n_clusters_found = perform_clustering(embeddings, cleaned_personas, 
                                                              n_clusters=optimal_k, 
                                                              method=clustering_method,
                                                              eps=eps,
                                                              min_samples=min_samples)
         
-        # Step 7: Save results to files
-        cluster_file, dissimilarity_file = save_results(cluster_labels, dissimilarity_matrix, output_dir)
+        # Step 8: Save results to files
+        cluster_file, dissimilarity_file, classification_file = save_results(
+            cluster_labels, dissimilarity_matrix, classification_results, output_dir
+        )
         
-        # Step 8: Analyze clusters
-        cluster_analysis = analyze_persona_clusters(cleaned_personas, cluster_labels, n_clusters_found)
+        # Step 9: Analyze clusters
+        cluster_analysis = analyze_persona_clusters(
+            cleaned_personas, cluster_labels, n_clusters_found, classification_results
+        )
         
-        # Step 9: Generate summary report
-        generate_cluster_summary_report(cluster_analysis, len(cleaned_personas))
+        # Step 10: Generate summary report
+        generate_cluster_summary_report(cluster_analysis, len(cleaned_personas), classification_results)
         
-        # Step 10: Visualize results
-        embeddings_2d = visualize_persona_clusters(embeddings, cluster_labels, cleaned_personas, 
-                                                  method=visualization_method)
+        # Step 11: Visualize results
+        embeddings_2d = visualize_persona_clusters(
+            embeddings, cluster_labels, cleaned_personas, 
+            method=visualization_method, classification_results=classification_results,
+            color_by=color_by
+        )
         
         # Return results for further analysis
-        return {
+        results = {
             'personas': cleaned_personas,
             'embeddings': embeddings,
             'dissimilarity_matrix': dissimilarity_matrix,
@@ -652,11 +1173,16 @@ def main_clustering_pipeline(file_path, model_name="minishlab/potion-base-8M",
             'embeddings_2d': embeddings_2d,
             'n_clusters': n_clusters_found,
             'silhouette_scores': silhouette_scores,
+            'classification_results': classification_results,
+            'classifier': classifier,
             'output_files': {
                 'cluster_file': cluster_file,
-                'dissimilarity_file': dissimilarity_file
+                'dissimilarity_file': dissimilarity_file,
+                'classification_file': classification_file
             }
         }
+        
+        return results
         
     except Exception as e:
         print(f"Error in clustering pipeline: {str(e)}")
@@ -680,17 +1206,33 @@ def run_persona_clustering(personas_file_path, **kwargs):
         output_dir : str, directory to save results
         eps : float, DBSCAN eps parameter
         min_samples : int, DBSCAN min_samples parameter
+        use_classification : bool, whether to use zero-shot classification
+        classification_dimensions : list, dimensions to classify on
+        classification_method : str, 'semantic', 'classification', or 'hybrid'
+        color_by : str, what to color visualization by
     
     Returns:
     --------
     dict : Complete analysis results
     """
     
-    print("Starting Persona Clustering Analysis...")
+    print("Starting Enhanced Persona Clustering Analysis...")
     print("=" * 60)
     print(f"Input file: {personas_file_path}")
     print(f"Model: {kwargs.get('model_name', 'minishlab/potion-base-8M')}")
     print(f"Method: {kwargs.get('clustering_method', 'kmeans')}")
+    
+    # Show classification info if enabled
+    if kwargs.get('use_classification', False):
+        dims = kwargs.get('classification_dimensions', [])
+        method = kwargs.get('classification_method', 'semantic')
+        print(f"Zero-shot classification: ENABLED")
+        print(f"Classification dimensions: {dims}")
+        print(f"Classification method: {method}")
+        print(f"Visualization coloring: {kwargs.get('color_by', 'cluster')}")
+    else:
+        print(f"Zero-shot classification: DISABLED")
+    
     if kwargs.get('clustering_method') == 'dbscan':
         print(f"DBSCAN eps: {kwargs.get('eps', 0.5)}")
         print(f"DBSCAN min_samples: {kwargs.get('min_samples', 3)}")
@@ -713,33 +1255,42 @@ def run_persona_clustering(personas_file_path, **kwargs):
         print(f"  • {len(results['personas'])} personas analyzed")
         print(f"  • {results['n_clusters']} clusters identified") 
         print(f"  • Embedding dimensions: {results['embeddings'].shape}")
+        
+        if results['classification_results']:
+            print(f"  • Classification dimensions: {list(results['classification_results'].keys())}")
+        
         print(f"\n📁 OUTPUT FILES:")
         print(f"  • Clusters: {os.path.basename(results['output_files']['cluster_file'])}")
         print(f"  • Dissimilarity matrix: {os.path.basename(results['output_files']['dissimilarity_file'])}")
+        if results['output_files']['classification_file']:
+            print(f"  • Classification details: {os.path.basename(results['output_files']['classification_file'])}")
         print(f"  • Location: {os.path.dirname(results['output_files']['cluster_file'])}")
         
         # Example: Find similar personas to a specific one
         if len(results['personas']) > 0:
             print(f"\n🔍 SIMILARITY EXAMPLE:")
             sample_persona = results['personas'][0]
-            sample_embedding = results['model'].encode([sample_persona])
             
-            similarities = cosine_similarity(sample_embedding, results['embeddings'])[0]
-            top_indices = np.argsort(similarities)[-6:-1][::-1]  # Top 5 similar (excluding itself)
-            
-            print(f"Most similar personas to Persona 0:")
-            print(f"  '{sample_persona[:80]}...'")
-            for i, idx in enumerate(top_indices):
-                print(f"  {i+1}. Persona {idx} (similarity: {similarities[idx]:.3f})")
-                print(f"     {results['personas'][idx][:80]}...")
+            if hasattr(results['model'], 'encode'):
+                # Model2Vec model
+                sample_embedding = results['model'].encode([sample_persona])
+                similarities = cosine_similarity(sample_embedding, results['embeddings'])[0]
+                top_indices = np.argsort(similarities)[-6:-1][::-1]  # Top 5 similar (excluding itself)
+                
+                print(f"Most similar personas to Persona 0:")
+                print(f"  '{sample_persona[:80]}...'")
+                for i, idx in enumerate(top_indices):
+                    print(f"  {i+1}. Persona {idx} (similarity: {similarities[idx]:.3f})")
+                    print(f"     {results['personas'][idx][:80]}...")
         
         print(f"\n💡 ACCESS YOUR RESULTS:")
-        print(f"  results['personas']           # List of personas")
-        print(f"  results['embeddings']         # Model2Vec embeddings") 
-        print(f"  results['dissimilarity_matrix'] # Pairwise distances")
-        print(f"  results['cluster_labels']     # Cluster assignments")
-        print(f"  results['cluster_analysis']   # Detailed cluster info")
-        print(f"  results['model']              # Model2Vec model")
+        print(f"  results['personas']              # List of personas")
+        print(f"  results['embeddings']            # Embeddings used for clustering") 
+        print(f"  results['dissimilarity_matrix']  # Pairwise distances")
+        print(f"  results['cluster_labels']        # Cluster assignments")
+        print(f"  results['cluster_analysis']      # Detailed cluster info")
+        print(f"  results['classification_results'] # Zero-shot classification data")
+        print(f"  results['model']                 # Model used for embeddings")
         
         return results
     
@@ -754,7 +1305,7 @@ if __name__ == "__main__":
     import argparse
     
     # Set up command line argument parsing
-    parser = argparse.ArgumentParser(description='Cluster persona descriptions using Model2Vec')
+    parser = argparse.ArgumentParser(description='Cluster persona descriptions using Model2Vec and/or zero-shot classification')
     parser.add_argument('personas_file', help='Path to personas text file')
     parser.add_argument('--model', default='minishlab/potion-base-8M', 
                        help='Model2Vec model to use (default: minishlab/potion-base-8M)')
@@ -771,9 +1322,36 @@ if __name__ == "__main__":
     parser.add_argument('--min-samples', type=int, default=3,
                        help='DBSCAN min_samples parameter: min points to form a cluster (default: 3)')
     
+    # New classification arguments
+    parser.add_argument('--use-classification', action='store_true',
+                       help='Enable zero-shot classification features')
+    parser.add_argument('--dimensions', nargs='+', 
+                       choices=list(CLASSIFICATION_DIMENSIONS.keys()),
+                       default=['seniority', 'industry', 'expertise', 'priorities', 'challenges'],
+                       help='Classification dimensions to use (default: seniority industry expertise priorities challenges)')
+    parser.add_argument('--classification-method', 
+                       choices=['semantic', 'classification', 'hybrid'], 
+                       default='semantic',
+                       help='Clustering approach: semantic (Model2Vec only), classification (zero-shot only), hybrid (both) (default: semantic)')
+    parser.add_argument('--color-by', default='cluster',
+                       help='What to color visualization by: cluster or any classification dimension (default: cluster)')
+    
     # If running as script with command line arguments
     if len(sys.argv) > 1:
         args = parser.parse_args()
+        
+        # Validate color_by argument
+        valid_color_options = ['cluster'] + list(CLASSIFICATION_DIMENSIONS.keys())
+        if args.color_by not in valid_color_options:
+            print(f"Error: --color-by must be one of: {valid_color_options}")
+            sys.exit(1)
+        
+        # If color_by is a classification dimension, ensure use_classification is enabled
+        if args.color_by != 'cluster' and not args.use_classification:
+            print(f"Warning: --color-by {args.color_by} requires --use-classification. Enabling classification...")
+            args.use_classification = True
+            if args.color_by not in args.dimensions:
+                args.dimensions.append(args.color_by)
         
         results = run_persona_clustering(
             personas_file_path=args.personas_file,
@@ -783,17 +1361,37 @@ if __name__ == "__main__":
             visualization_method=args.viz,
             output_dir=args.output,
             eps=args.eps,
-            min_samples=args.min_samples
+            min_samples=args.min_samples,
+            use_classification=args.use_classification,
+            classification_dimensions=args.dimensions,
+            classification_method=args.classification_method,
+            color_by=args.color_by
         )
     
     # If running interactively or no arguments provided
     else:
+        print("Enhanced Persona Clustering Tool")
+        print("=" * 40)
         print("Interactive mode: Please provide your personas file path")
-        print("Example usage:")
+        print("\nBasic usage:")
         print("  results = run_persona_clustering('UXR_personas.txt')")
-        print("\nOr run from command line:")
+        print("\nWith zero-shot classification:")
+        print("  results = run_persona_clustering('UXR_personas.txt',")
+        print("                                   use_classification=True,")
+        print("                                   classification_dimensions=['seniority', 'industry'],")
+        print("                                   classification_method='hybrid',")
+        print("                                   color_by='seniority')")
+        print("\nCommand line examples:")
+        print("  # Basic semantic clustering")
         print("  python persona_clustering.py UXR_personas.txt")
-        print("  python persona_clustering.py UXR_personas.txt --clusters 5 --method dbscan")
+        print("\n  # With zero-shot classification")
+        print("  python persona_clustering.py UXR_personas.txt --use-classification --dimensions seniority industry")
+        print("\n  # Hybrid approach with custom visualization")
+        print("  python persona_clustering.py UXR_personas.txt --use-classification --classification-method hybrid --color-by seniority")
+        print("\n  # DBSCAN with classification")
+        print("  python persona_clustering.py UXR_personas.txt --method dbscan --use-classification --dimensions seniority industry expertise")
+        
+        print(f"\nAvailable classification dimensions: {list(CLASSIFICATION_DIMENSIONS.keys())}")
         
         # For your specific file, you can run:
-        # results = run_persona_clustering('UXR_personas.txt')
+        # results = run_persona_clustering('UXR_personas.txt', use_classification=True)

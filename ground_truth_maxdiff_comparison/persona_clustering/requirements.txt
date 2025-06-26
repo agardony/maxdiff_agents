@@ -8,3 +8,8 @@ numpy>=1.21.0
 
 # Interactive visualization
 plotly>=5.0.0
+
+# Zero-shot classification (optional but recommended)
+torch>=2.0.0
+transformers>=4.30.0
+tokenizers>=0.21.0
