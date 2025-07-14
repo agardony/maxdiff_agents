@@ -106,7 +106,7 @@ cat("Number of items:", length(human_class_cols), "\n")
 
 ```{r load_llm_data}
 # Read LLM responses data
-llm_responses <- read_csv("../maxdiff_data/maxdiff_responses.csv")
+llm_responses <- read_csv("../persona_clustering/maxdiff_responses_with_clusters.csv")
 
 # Create a mapping of long names to short names
 name_mapping <- c(
@@ -142,6 +142,32 @@ llm_responses <- llm_responses %>%
 llm_responses %>% 
   count(model_clean, model_name) %>%
   arrange(model_clean) %>%
+  print()
+
+# Check cluster distributions
+llm_responses %>% 
+  group_by(seniority_cluster) %>%
+  count() %>%
+  print()
+
+llm_responses %>% 
+  group_by(industry_cluster) %>%
+  count() %>%
+  print()
+
+llm_responses %>% 
+  group_by(expertise_cluster) %>%
+  count() %>%
+  print()
+
+llm_responses %>% 
+  group_by(priorities_cluster) %>%
+  count() %>%
+  print()
+
+llm_responses %>% 
+  group_by(challenges_cluster) %>%
+  count() %>%
   print()
 
 # approach to calculate user-item scores

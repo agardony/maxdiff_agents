@@ -1,0 +1,1036 @@
+---
+title: "MaxDiff Analysis: Cluster-Based Stratification"
+author: "Aaron Gardony <agardony@gmail.com>"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    df_print: paged
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, 
+                      fig.width = 12, fig.height = 8, dpi = 300)
+```
+
+# Introduction
+
+This notebook analyzes MaxDiff survey results for LLM-simulated UX researcher responses (N=309) across five different cluster dimensions. The analysis focuses on how utility scores for 14 UX research classes vary across different persona clusters, examining patterns within cluster stratifications rather than comparing to human baselines.
+
+**Key Analysis Dimensions:**
+- **Seniority Clusters**: Career level segmentation  
+- **Industry Clusters**: Domain-specific expertise areas
+- **Expertise Clusters**: Research methodology specializations
+- **Priorities Clusters**: Professional focus areas
+- **Challenges Clusters**: Common workplace obstacles
+
+# Data Loading and Preparation
+
+## Load Required Libraries
+
+```{r libraries}
+# Core tidyverse
+library(tidyverse)
+library(readxl)
+
+# Visualization and styling
+library(ggplot2)
+library(ggtext)
+library(patchwork)
+library(scales)
+library(viridis)
+
+# Data manipulation and stats
+library(broom)
+library(janitor)
+
+# Tables
+library(kableExtra)
+library(gt)
+
+# Set ggplot theme
+theme_set(theme_minimal(base_size = 12, base_family = "sans"))
+
+# Define a color palette as a list
+colors <- list(
+  primary = "#2E86AB",
+  secondary = "#A23B72", 
+  accent = "#F18F01",
+  neutral = "#C73E1D",
+  success = "#06D6A0",
+  light_gray = "#F8F9FA",
+  medium_gray = "#6C757D"
+)
+```
+
+## Load and Process LLM Data with Clusters
+
+```{r load_data}
+# Read LLM responses data with cluster assignments
+llm_responses <- read_csv("../persona_clustering/maxdiff_responses_with_clusters.csv")
+
+# Create a mapping of long names to short names
+name_mapping <- c(
+  "Choice Modeling Hands-On: Introduction to Conjoint Analysis and MaxDiff" = "Choice Models",
+  "Survey Masterclass: Intensive Review of Best Practices for Online Surveys" = "Surveys", 
+  "Log Sequence Analysis: Tools to Visualize, Model, and Understand Instrument Logs" = "Log Sequences",
+  "Psychometrics for Survey Scales: Reliability and Validity Assessment for Practitioners" = "Psychometrics",
+  "R-Intensive: In-Person R Programming Bootcamp for Social Scientists in Industry" = "R Programming",
+  "The Price is Right: Best Practices in Pricing Research" = "Pricing",
+  "HEART UX Metrics Deep Dive: From Best Practices to Leading HEART Workshops with Your Team" = "UX Metrics",
+  "Introduction to Bayesian Statistics: Linear and Hierarchical Linear Bayesian Models in R" = "Bayes Stats",
+  "Text Analytics 0 to 60: Sentiment Analysis and Topic Modeling with Natural Language Texts" = "Text Analytics",
+  "Yes, It is Causation, and not Correlation: Models for Causal Inference in R" = "Causal Models",
+  "Interviewer Training: Improving Your Team's Quant UX Interview Process" = "Interviewer-ing",
+  "Advanced Choice Modeling Surveys: Advanced Options Beyond Standard Conjoint and MaxDiff" = "Advanced Choice",
+  "Segmentation: Running a Successful Segmentation Effort, from the Models through Team Politics" = "Segmentation",
+  "UX Metrics Sprintmaster Training: How to Lead UX Metrics Sprints" = "Metrics Sprints"
+)
+
+# Add user ID for tracking
+llm_responses <- llm_responses %>%
+  mutate(user_id = str_c(model_name, persona_index, sep = "_"))
+
+# Define cluster columns
+cluster_columns <- c("seniority_cluster", "industry_cluster", "expertise_cluster", 
+                    "priorities_cluster", "challenges_cluster")
+
+# Check cluster distributions
+cat("Cluster dimension overview:\n")
+for (col in cluster_columns) {
+  cat("\n", str_to_title(str_remove(col, "_cluster")), "Clusters:\n")
+  cluster_counts <- llm_responses %>% 
+    count(.data[[col]], name = "n_personas") %>%
+    arrange(desc(n_personas))
+  
+  print(cluster_counts)
+}
+```
+
+# Utility Score Calculation
+
+## Function to Calculate User-Item Scores
+
+```{r utility_functions}
+# Function to calculate individual utility scores
+calc_user_item_scores <- function(responses_df) {
+  # Get all unique items
+  all_items <- responses_df %>%
+    select(best_item_name, worst_item_name) %>%
+    pivot_longer(everything(), values_to = "item_name") %>%
+    filter(!is.na(item_name)) %>%
+    distinct(item_name) %>%
+    pull(item_name)
+  
+  # Count best/worst selections
+  best_counts <- responses_df %>%
+    filter(!is.na(best_item_name)) %>%
+    count(user_id, best_item_name, name = "best_count") %>%
+    rename(item_name = best_item_name)
+  
+  worst_counts <- responses_df %>%
+    filter(!is.na(worst_item_name)) %>%
+    count(user_id, worst_item_name, name = "worst_count") %>%
+    rename(item_name = worst_item_name)
+  
+  # Count appearances using map approach
+  appearance_counts <- responses_df %>%
+    filter(!is.na(trial_items)) %>%
+    select(user_id, trial_items) %>%
+    crossing(item_name = all_items) %>%
+    mutate(
+      appears = map2_lgl(trial_items, item_name, ~str_detect(.x, fixed(.y)))
+    ) %>%
+    filter(appears) %>%
+    count(user_id, item_name, name = "appearance_count")
+  
+  # Combine all counts
+  all_users <- unique(responses_df$user_id)
+  
+  results <- crossing(user_id = all_users, item_name = all_items) %>%
+    left_join(best_counts, by = c("user_id", "item_name")) %>%
+    left_join(worst_counts, by = c("user_id", "item_name")) %>%
+    left_join(appearance_counts, by = c("user_id", "item_name")) %>%
+    replace_na(list(best_count = 0, worst_count = 0, appearance_count = 0)) %>%
+    mutate(
+      best_rate = if_else(appearance_count > 0, best_count / appearance_count, 0),
+      worst_rate = if_else(appearance_count > 0, worst_count / appearance_count, 0),
+      utility_score = best_rate - worst_rate
+    )
+  
+  return(results)
+}
+
+# Function to create wide format with cluster information
+create_wide_format <- function(long_data, name_mapping, include_cluster = FALSE, cluster_name = NULL) {
+  # Prepare the base data
+  base_data <- long_data %>%
+    mutate(short_name = name_mapping[item_name]) %>%
+    filter(!is.na(short_name))
+  
+  # Handle column selection based on include_cluster flag
+  if (include_cluster && !is.null(cluster_name)) {
+    selected_data <- base_data %>%
+      select(user_id, short_name, utility_score, all_of(cluster_name))
+    id_cols <- c("user_id", cluster_name)
+  } else {
+    selected_data <- base_data %>%
+      select(user_id, short_name, utility_score)
+    id_cols <- "user_id"
+  }
+  
+  # Create wide format
+  wide_data <- selected_data %>%
+    pivot_wider(
+      names_from = short_name,
+      values_from = utility_score,
+      values_fill = 0,
+      id_cols = all_of(id_cols)
+    ) %>%
+    rename(Record.ID = user_id)
+  
+  return(wide_data)
+}
+
+# Calculate user-item scores
+llm_user_scores <- calc_user_item_scores(llm_responses)
+
+# Add cluster information to user scores
+cluster_info <- llm_responses %>%
+  select(user_id, all_of(cluster_columns)) %>%
+  distinct()
+
+llm_user_scores <- llm_user_scores %>%
+  left_join(cluster_info, by = "user_id")
+
+cat("Utility scores calculated for", n_distinct(llm_user_scores$user_id), "users and", 
+    n_distinct(llm_user_scores$item_name), "items\n")
+```
+
+# Cluster-Based Analysis
+
+## Create Wide Format Data for Each Cluster Dimension
+
+```{r create_wide_formats}
+# Create wide format datasets for each cluster dimension
+llm_wide_formats <- list()
+
+for (cluster_col in cluster_columns) {
+  cluster_name <- str_remove(cluster_col, "_cluster")
+  llm_wide_formats[[cluster_name]] <- create_wide_format(
+    llm_user_scores, 
+    name_mapping, 
+    include_cluster = TRUE, 
+    cluster_name = cluster_col
+  )
+}
+
+# Also create overall format without clusters
+llm_wide_formats[["overall"]] <- create_wide_format(llm_user_scores, name_mapping)
+
+# Get item column names from the wide format
+item_cols <- names(llm_wide_formats[["overall"]])[-1]  # Exclude Record.ID
+
+cat("Wide format datasets created for", length(llm_wide_formats), "cluster dimensions\n")
+cat("Items included:", paste(item_cols, collapse = ", "), "\n")
+```
+
+## Calculate Cluster Means
+
+```{r cluster_means}
+# Function to calculate means for each cluster
+calc_cluster_means <- function(cluster_name) {
+  wide_data <- llm_wide_formats[[cluster_name]]
+  cluster_col <- paste0(cluster_name, "_cluster")
+  
+  # Get the item columns (exclude Record.ID and cluster column)
+  item_cols <- setdiff(names(wide_data), c("Record.ID", cluster_col))
+  
+  # Calculate means by cluster
+  wide_data %>%
+    group_by(.data[[cluster_col]]) %>%
+    summarise(
+      across(all_of(item_cols), mean, na.rm = TRUE),
+      n_personas = n(),
+      .groups = "drop"
+    ) %>%
+    rename(cluster = all_of(cluster_col)) %>%
+    mutate(dimension = cluster_name) %>%
+    select(dimension, cluster, n_personas, everything())
+}
+
+# Calculate means for all cluster dimensions
+cluster_means <- map_dfr(c("seniority", "industry", "expertise", "priorities", "challenges"), 
+                        calc_cluster_means)
+
+# Convert to long format for easier analysis
+cluster_means_long <- cluster_means %>%
+  pivot_longer(
+    cols = -c(dimension, cluster, n_personas),
+    names_to = "item",
+    values_to = "mean_score"
+  )
+
+cat("Cluster means calculated for", nrow(cluster_means), "unique clusters\n")
+print(cluster_means_long %>% count(dimension, name = "clusters_per_dimension"))
+```
+
+# Visualizations
+
+## Create Heatmap Function
+
+```{r heatmap_function}
+create_cluster_heatmap <- function(dim_name) {
+  plot_data <- cluster_means_long %>%
+    filter(dimension == dim_name) %>%
+    mutate(
+      cluster = str_wrap(cluster, 15),
+      item = str_wrap(item, 12)
+    )
+  
+  ggplot(plot_data, aes(x = item, y = cluster, fill = mean_score)) +
+    geom_tile(color = "white", linewidth = 0.5) +
+    scale_fill_gradient2(
+      low = colors$secondary, mid = "white", high = colors$primary,
+      midpoint = 0, name = "Mean\nUtility", 
+      labels = function(x) sprintf("%.2f", x)
+    ) +
+    theme_minimal(base_size = 10) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+      axis.text.y = element_text(size = 9),
+      plot.title = element_text(size = 12, face = "bold"),
+      legend.position = "right",
+      panel.grid = element_blank()
+    ) +
+    labs(
+      title = paste(str_to_title(dim_name), "Clusters: Mean Utility Scores"),
+      x = "UX Research Classes",
+      y = paste(str_to_title(dim_name), "Clusters")
+    )
+}
+```
+
+## Generate Heatmaps for Each Dimension
+
+```{r heatmaps, fig.height=8, fig.width=12}
+# Create heatmaps for each cluster dimension
+heatmap_plots <- list()
+dimensions <- c("seniority", "industry", "expertise", "priorities", "challenges")
+
+for (dim_name in dimensions) {
+  heatmap_plots[[dim_name]] <- create_cluster_heatmap(dim_name)
+  print(heatmap_plots[[dim_name]])
+  cat("\n\n")
+}
+```
+
+# Statistical Analysis
+
+## Cluster Deviation Analysis
+
+```{r cluster_deviations}
+# Calculate deviations from overall mean for each cluster
+calculate_cluster_deviations <- function() {
+  # First calculate overall mean utility for each item across all clusters
+  overall_item_means <- cluster_means_long %>%
+    group_by(item) %>%
+    summarise(
+      overall_mean = mean(mean_score, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  # Calculate deviations for each cluster
+  cluster_deviations <- cluster_means_long %>%
+    left_join(overall_item_means, by = "item") %>%
+    mutate(
+      deviation = mean_score - overall_mean,
+      abs_deviation = abs(deviation)
+    ) %>%
+    group_by(dimension, cluster) %>%
+    summarise(
+      n_personas = first(n_personas),
+      mean_deviation = mean(deviation, na.rm = TRUE),
+      mean_abs_deviation = mean(abs_deviation, na.rm = TRUE),
+      max_positive_dev = max(deviation, na.rm = TRUE),
+      max_negative_dev = min(deviation, na.rm = TRUE),
+      n_items = n(),
+      .groups = "drop"
+    ) %>%
+    arrange(dimension, desc(mean_abs_deviation))
+  
+  return(cluster_deviations)
+}
+
+cluster_deviations <- calculate_cluster_deviations()
+
+# Identify most extreme clusters by dimension
+cat("Clusters with largest deviations from mean utility by dimension:\n\n")
+for (dim in dimensions) {
+  cat("**", str_to_title(dim), "Dimension:**\n")
+  
+  dim_deviations <- cluster_deviations %>%
+    filter(dimension == dim) %>%
+    arrange(desc(mean_abs_deviation))
+  
+  # Show top 3 most extreme clusters
+  top_extreme <- dim_deviations %>%
+    slice_head(n = 3) %>%
+    select(cluster, n_personas, mean_deviation, mean_abs_deviation, max_positive_dev, max_negative_dev)
+  
+  print(top_extreme)
+  cat("\n")
+}
+
+# Overall ranking of most extreme clusters across all dimensions
+cat("Most extreme clusters overall (highest absolute deviation):\n")
+most_extreme_overall <- cluster_deviations %>%
+  arrange(desc(mean_abs_deviation)) %>%
+  slice_head(n = 10) %>%
+  select(dimension, cluster, n_personas, mean_deviation, mean_abs_deviation)
+
+print(most_extreme_overall)
+```
+
+## Item-Specific Cluster Deviations
+
+```{r item_specific_deviations}
+# Detailed analysis of which items drive the largest deviations
+calculate_detailed_deviations <- function() {
+  # Calculate overall means by item
+  overall_item_means <- cluster_means_long %>%
+    group_by(item) %>%
+    summarise(overall_mean = mean(mean_score, na.rm = TRUE), .groups = "drop")
+  
+  # Calculate deviations for each cluster-item combination
+  detailed_deviations <- cluster_means_long %>%
+    left_join(overall_item_means, by = "item") %>%
+    mutate(
+      deviation = mean_score - overall_mean,
+      abs_deviation = abs(deviation)
+    ) %>%
+    arrange(desc(abs_deviation))
+  
+  return(detailed_deviations)
+}
+
+detailed_deviations <- calculate_detailed_deviations()
+
+# Show most extreme cluster-item combinations
+cat("Most extreme cluster-item deviations:\n")
+extreme_combinations <- detailed_deviations %>%
+  slice_head(n = 15) %>%
+  select(dimension, cluster, item, mean_score, overall_mean, deviation, n_personas)
+
+print(extreme_combinations)
+
+# Show which items contribute most to cluster extremeness
+cat("\nItems that create the most cluster differentiation:\n")
+item_differentiation <- detailed_deviations %>%
+  group_by(item) %>%
+  summarise(
+    avg_abs_deviation = mean(abs_deviation, na.rm = TRUE),
+    max_deviation = max(abs_deviation, na.rm = TRUE),
+    most_extreme_cluster = cluster[which.max(abs_deviation)],
+    most_extreme_dimension = dimension[which.max(abs_deviation)],
+    .groups = "drop"
+  ) %>%
+  arrange(desc(avg_abs_deviation))
+
+print(item_differentiation)
+```
+
+## Visualization of Item-Specific Deviations
+
+```{r item_deviation_plots, fig.height=12, fig.width=14}
+# Plot 1: Most extreme cluster-item combinations
+extreme_combinations_plot <- detailed_deviations %>%
+  slice_head(n = 20) %>%
+  mutate(
+    cluster_item = paste(str_wrap(cluster, 15), str_wrap(item, 10), sep = "\n"),
+    deviation_type = ifelse(deviation > 0, "Above Average", "Below Average")
+  ) %>%
+  ggplot(aes(x = reorder(cluster_item, abs_deviation), y = deviation, fill = deviation_type)) +
+  geom_col(alpha = 0.8) +
+  geom_text(aes(label = paste0(dimension, "\nn=", n_personas)), 
+            hjust = ifelse(detailed_deviations$deviation[1:20] > 0, -0.1, 1.1), 
+            size = 2.5) +
+  scale_fill_manual(values = c("Above Average" = colors$primary, 
+                              "Below Average" = colors$secondary)) +
+  coord_flip() +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, face = "bold"),
+    axis.text.y = element_text(size = 8),
+    legend.position = "bottom"
+  ) +
+  labs(
+    title = "Top 20 Most Extreme Cluster-Item Deviations",
+    x = "Cluster - Item Combinations",
+    y = "Deviation from Overall Item Mean",
+    fill = "Deviation Direction",
+    subtitle = "Labels show dimension and cluster size"
+  )
+
+print(extreme_combinations_plot)
+cat("\n\n")
+
+# Plot 2: Item differentiation potential
+item_diff_plot <- item_differentiation %>%
+  slice_head(n = 14) %>%  # All items
+  mutate(
+    item_wrapped = str_wrap(item, 15)
+  ) %>%
+  ggplot(aes(x = reorder(item_wrapped, avg_abs_deviation), y = avg_abs_deviation)) +
+  geom_col(fill = colors$accent, alpha = 0.8) +
+  geom_text(aes(label = paste0(most_extreme_dimension, "\n", str_wrap(most_extreme_cluster, 12))), 
+            hjust = -0.1, size = 3) +
+  coord_flip() +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, face = "bold"),
+    axis.text.y = element_text(size = 9)
+  ) +
+  labs(
+    title = "Items Ranked by Cluster Differentiation Potential",
+    x = "UX Research Classes",
+    y = "Average Absolute Deviation Across All Clusters",
+    subtitle = "Labels show dimension and cluster with maximum deviation"
+  )
+
+print(item_diff_plot)
+cat("\n\n")
+
+# Plot 3: Deviation patterns by dimension
+dimension_deviation_patterns <- detailed_deviations %>%
+  group_by(dimension, item) %>%
+  summarise(
+    avg_abs_deviation = mean(abs_deviation, na.rm = TRUE),
+    max_deviation = max(abs_deviation, na.rm = TRUE),
+    min_deviation = min(abs_deviation, na.rm = TRUE),
+    range_deviation = max_deviation - min_deviation,
+    .groups = "drop"
+  )
+
+dimension_pattern_plot <- dimension_deviation_patterns %>%
+  ggplot(aes(x = str_wrap(item, 10), y = avg_abs_deviation, fill = dimension)) +
+  geom_col(position = "dodge", alpha = 0.8) +
+  scale_fill_viridis_d(name = "Dimension") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    legend.position = "bottom"
+  ) +
+  labs(
+    title = "Average Item Deviation by Cluster Dimension",
+    x = "UX Research Classes",
+    y = "Average Absolute Deviation",
+    subtitle = "Comparing how much each item varies across clusters within each dimension"
+  )
+
+print(dimension_pattern_plot)
+cat("\n\n")
+
+# Plot 4: Heatmap of extreme deviations by dimension and item
+extreme_heatmap_data <- detailed_deviations %>%
+  group_by(dimension, item) %>%
+  slice_max(abs_deviation, n = 1) %>%  # Get most extreme cluster for each dimension-item combo
+  ungroup() %>%
+  select(dimension, item, cluster, deviation, abs_deviation)
+
+extreme_heatmap <- extreme_heatmap_data %>%
+  ggplot(aes(x = str_wrap(item, 10), y = dimension, fill = deviation)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = str_wrap(cluster, 12)), size = 2.5, color = "white") +
+  scale_fill_gradient2(
+    low = colors$secondary, mid = "white", high = colors$primary,
+    midpoint = 0, name = "Max\nDeviation"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 12, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+    axis.text.y = element_text(size = 10),
+    panel.grid = element_blank()
+  ) +
+  labs(
+    title = "Most Extreme Cluster for Each Item-Dimension Combination",
+    x = "UX Research Classes",
+    y = "Cluster Dimensions",
+    subtitle = "Cell labels show the cluster with maximum absolute deviation"
+  )
+
+print(extreme_heatmap)
+```
+
+## Visualization of Cluster Deviations
+
+```{r deviation_plots, fig.height=10, fig.width=12}
+# Create deviation plots for each dimension
+create_deviation_plot <- function(dim_name) {
+  plot_data <- cluster_deviations %>%
+    filter(dimension == dim_name) %>%
+    mutate(
+      cluster_wrapped = str_wrap(cluster, 20),
+      deviation_type = ifelse(mean_deviation > 0, "Above Average", "Below Average")
+    )
+  
+  ggplot(plot_data, aes(x = reorder(cluster_wrapped, mean_abs_deviation), 
+                       y = mean_deviation, fill = deviation_type)) +
+    geom_col(alpha = 0.8) +
+    geom_text(aes(label = paste0("n=", n_personas)), 
+              hjust = ifelse(plot_data$mean_deviation > 0, -0.1, 1.1), 
+              size = 3) +
+    scale_fill_manual(values = c("Above Average" = colors$primary, 
+                                "Below Average" = colors$secondary)) +
+    coord_flip() +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 12, face = "bold"),
+      legend.position = "bottom"
+    ) +
+    labs(
+      title = paste("Cluster Deviations from Mean Utility -", str_to_title(dim_name)),
+      x = "Clusters (ordered by absolute deviation)",
+      y = "Mean Deviation from Overall Item Means",
+      fill = "Deviation Direction"
+    )
+}
+
+# Generate deviation plots
+deviation_plots <- list()
+for (dim_name in dimensions) {
+  deviation_plots[[dim_name]] <- create_deviation_plot(dim_name)
+  print(deviation_plots[[dim_name]])
+  cat("\n\n")
+}
+```
+
+## Cluster Utility Range Analysis
+
+```{r utility_ranges}
+# Calculate utility ranges and variability for each item across clusters
+utility_analysis <- cluster_means_long %>%
+  group_by(dimension, item) %>%
+  summarise(
+    min_utility = min(mean_score, na.rm = TRUE),
+    max_utility = max(mean_score, na.rm = TRUE),
+    range = max_utility - min_utility,
+    mean_utility = mean(mean_score, na.rm = TRUE),
+    sd_utility = sd(mean_score, na.rm = TRUE),
+    cv = sd_utility / abs(mean_utility),  # Coefficient of variation
+    n_clusters = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(dimension, desc(range))
+
+# Show items with highest variability across clusters for each dimension
+cat("Items with highest cluster variability by dimension:\n\n")
+for (dim in dimensions) {
+  cat("**", str_to_title(dim), "Dimension:**\n")
+  top_var <- utility_analysis %>%
+    filter(dimension == dim) %>%
+    slice_max(range, n = 3) %>%
+    select(item, range, mean_utility, sd_utility)
+  
+  print(top_var)
+  cat("\n")
+}
+```
+
+## Cross-Cluster Comparisons
+
+```{r cross_cluster_comparisons}
+# ANOVA-style analysis to identify items that vary most between clusters
+cluster_variation_summary <- cluster_means_long %>%
+  group_by(dimension, item) %>%
+  summarise(
+    between_cluster_var = var(mean_score, na.rm = TRUE),
+    n_clusters = n(),
+    overall_mean = mean(mean_score, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(dimension, desc(between_cluster_var))
+
+# Create summary by dimension
+dimension_summary <- cluster_variation_summary %>%
+  group_by(dimension) %>%
+  summarise(
+    avg_variation = mean(between_cluster_var, na.rm = TRUE),
+    max_variation = max(between_cluster_var, na.rm = TRUE),
+    most_variable_item = item[which.max(between_cluster_var)],
+    .groups = "drop"
+  ) %>%
+  arrange(desc(avg_variation))
+
+cat("Cluster dimensions ranked by average item variability:\n")
+print(dimension_summary)
+```
+
+## Item Preference Patterns
+
+```{r preference_patterns}
+# Analyze which items are consistently preferred/avoided across all clusters
+item_preference_patterns <- cluster_means_long %>%
+  group_by(item) %>%
+  summarise(
+    overall_mean = mean(mean_score, na.rm = TRUE),
+    min_cluster_score = min(mean_score, na.rm = TRUE),
+    max_cluster_score = max(mean_score, na.rm = TRUE),
+    n_positive_clusters = sum(mean_score > 0, na.rm = TRUE),
+    n_negative_clusters = sum(mean_score < 0, na.rm = TRUE),
+    consistency_score = 1 - (max_cluster_score - min_cluster_score) / 2,  # Higher = more consistent
+    .groups = "drop"
+  ) %>%
+  arrange(desc(overall_mean))
+
+cat("Items ranked by overall preference (across all clusters):\n")
+print(item_preference_patterns)
+
+# Identify most and least consistent items
+cat("\nMost consistent items (low variability across clusters):\n")
+print(item_preference_patterns %>% 
+       slice_max(consistency_score, n = 5) %>%
+       select(item, overall_mean, consistency_score))
+
+cat("\nMost variable items (high variability across clusters):\n")
+print(item_preference_patterns %>% 
+       slice_min(consistency_score, n = 5) %>%
+       select(item, overall_mean, consistency_score))
+```
+
+# Cluster Profile Analysis
+
+## Detailed Cluster Profiles
+
+```{r cluster_profiles}
+# Create detailed profiles for each cluster showing top preferences
+create_cluster_profile <- function(dim_name, top_n = 3) {
+  cluster_means_long %>%
+    filter(dimension == dim_name) %>%
+    group_by(cluster) %>%
+    arrange(desc(mean_score)) %>%
+    slice_head(n = top_n) %>%
+    mutate(rank = row_number()) %>%
+    ungroup() %>%
+    select(dimension, cluster, rank, item, mean_score, n_personas)
+}
+
+# Generate profiles for each dimension
+cat("Top preferences by cluster:\n\n")
+for (dim in dimensions) {
+  cat("##", str_to_title(dim), "Cluster Profiles\n")
+  profiles <- create_cluster_profile(dim, 3)
+  
+  for (cluster_name in unique(profiles$cluster)) {
+    cluster_data <- profiles %>% filter(cluster == cluster_name)
+    cat("\n**", cluster_name, "** (n =", cluster_data$n_personas[1], "):\n")
+    
+    for (i in 1:nrow(cluster_data)) {
+      cat(sprintf("%d. %s (%.3f)\n", 
+                  cluster_data$rank[i], 
+                  cluster_data$item[i], 
+                  cluster_data$mean_score[i]))
+    }
+  }
+  cat("\n\n")
+}
+```
+
+## Cluster Similarity Analysis
+
+```{r cluster_similarity}
+# Calculate pairwise correlations between clusters within each dimension
+calculate_cluster_correlations <- function(dim_name) {
+  # Get cluster means for this dimension in wide format
+  cluster_data <- cluster_means %>%
+    filter(dimension == dim_name) %>%
+    select(-dimension, -n_personas) %>%
+    column_to_rownames("cluster")
+  
+  # Calculate correlation matrix
+  cor_matrix <- cor(t(cluster_data), use = "complete.obs")
+  
+  # Convert to long format
+  cor_matrix %>%
+    as.data.frame() %>%
+    rownames_to_column("cluster1") %>%
+    pivot_longer(-cluster1, names_to = "cluster2", values_to = "correlation") %>%
+    filter(cluster1 != cluster2) %>%  # Remove self-correlations
+    mutate(dimension = dim_name) %>%
+    arrange(desc(correlation))
+}
+
+# Calculate correlations for each dimension
+cluster_correlations <- map_dfr(dimensions, calculate_cluster_correlations)
+
+# Show most and least similar cluster pairs by dimension
+cat("Most similar cluster pairs by dimension:\n\n")
+for (dim in dimensions) {
+  cat("**", str_to_title(dim), ":**\n")
+  most_similar <- cluster_correlations %>%
+    filter(dimension == dim) %>%
+    slice_max(correlation, n = 2)
+  
+  print(most_similar %>% select(cluster1, cluster2, correlation))
+  cat("\n")
+}
+```
+
+## Spearman Rank Correlation Analysis
+
+```{r spearman_rank_correlations}
+# Function to calculate Spearman rank correlations for clusters within each dimension
+calculate_spearman_rank_correlations <- function(dim_name) {
+  # Get cluster means for this dimension
+  cluster_data <- cluster_means %>%
+    filter(dimension == dim_name) %>%
+    select(-dimension, -n_personas)
+  
+  # Convert to wide format with clusters as columns
+  cluster_wide <- cluster_data %>%
+    pivot_longer(-cluster, names_to = "item", values_to = "mean_score") %>%
+    pivot_wider(names_from = cluster, values_from = mean_score) %>%
+    column_to_rownames("item")
+  
+  # Calculate ranks for each cluster (1 = highest utility)
+  cluster_ranks <- cluster_wide %>%
+    mutate(across(everything(), ~ rank(-.x, ties.method = "average")))
+  
+  # Calculate Spearman correlation matrix
+  spearman_cor_matrix <- cor(cluster_ranks, method = "spearman", use = "complete.obs")
+  
+  return(list(
+    ranks = cluster_ranks,
+    correlations = spearman_cor_matrix,
+    dimension = dim_name
+  ))
+}
+
+# Calculate Spearman correlations for each dimension
+spearman_results <- map(dimensions, calculate_spearman_rank_correlations)
+names(spearman_results) <- dimensions
+
+# Display correlation matrices
+cat("SPEARMAN RANK CORRELATION MATRICES\n")
+cat("===================================\n\n")
+
+for (dim_name in dimensions) {
+  cat("**", str_to_title(dim_name), "Dimension - Rank Correlations:**\n")
+  
+  # Round correlation matrix for display
+  cor_matrix <- round(spearman_results[[dim_name]]$correlations, 3)
+  
+  # Print as formatted table
+  print(cor_matrix)
+  cat("\n")
+  
+  # Show highest and lowest correlations (excluding diagonal)
+  cor_long <- cor_matrix %>%
+    as.data.frame() %>%
+    rownames_to_column("cluster1") %>%
+    pivot_longer(-cluster1, names_to = "cluster2", values_to = "correlation") %>%
+    filter(cluster1 != cluster2) %>%
+    arrange(desc(correlation))
+  
+  cat("Highest rank correlations in", str_to_title(dim_name), ":\n")
+  print(cor_long %>% slice_head(n = 3) %>% select(cluster1, cluster2, correlation))
+  
+  cat("\nLowest rank correlations in", str_to_title(dim_name), ":\n")
+  print(cor_long %>% slice_tail(n = 3) %>% select(cluster1, cluster2, correlation))
+  cat("\n\n")
+}
+```
+
+## Rank-Based Heatmaps
+
+```{r rank_heatmaps, fig.height=8, fig.width=12}
+# Create rank-based heatmaps for each dimension
+create_rank_heatmap <- function(dim_name) {
+  # Get ranks data
+  ranks_data <- spearman_results[[dim_name]]$ranks %>%
+    rownames_to_column("item") %>%
+    pivot_longer(-item, names_to = "cluster", values_to = "rank")
+  
+  # Create heatmap
+  ggplot(ranks_data, aes(x = str_wrap(item, 12), y = str_wrap(cluster, 15), fill = rank)) +
+    geom_tile(color = "white", linewidth = 0.5) +
+    geom_text(aes(label = round(rank, 1)), size = 3, color = "white") +
+    scale_fill_gradient2(
+      low = colors$primary, mid = colors$accent, high = colors$secondary,
+      midpoint = median(ranks_data$rank, na.rm = TRUE),
+      name = "Rank\n(1=Best)", 
+      guide = guide_colorbar(reverse = TRUE)
+    ) +
+    theme_minimal(base_size = 10) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 9),
+      axis.text.y = element_text(size = 9),
+      plot.title = element_text(size = 12, face = "bold"),
+      legend.position = "right",
+      panel.grid = element_blank()
+    ) +
+    labs(
+      title = paste(str_to_title(dim_name), "Clusters: Item Rank Heatmap"),
+      x = "UX Research Classes",
+      y = paste(str_to_title(dim_name), "Clusters"),
+      subtitle = "Lower numbers = higher preference ranks"
+    )
+}
+
+# Generate rank heatmaps
+rank_heatmap_plots <- list()
+for (dim_name in dimensions) {
+  rank_heatmap_plots[[dim_name]] <- create_rank_heatmap(dim_name)
+  print(rank_heatmap_plots[[dim_name]])
+  cat("\n\n")
+}
+```
+
+## Rank Correlation Summary Analysis
+
+```{r rank_correlation_summary}
+# Summarize rank correlation patterns across dimensions
+rank_correlation_summary <- map_dfr(dimensions, function(dim_name) {
+  cor_matrix <- spearman_results[[dim_name]]$correlations
+  
+  # Convert to long format excluding diagonal
+  cor_long <- cor_matrix %>%
+    as.data.frame() %>%
+    rownames_to_column("cluster1") %>%
+    pivot_longer(-cluster1, names_to = "cluster2", values_to = "correlation") %>%
+    filter(cluster1 != cluster2)
+  
+  # Summary statistics
+  tibble(
+    dimension = dim_name,
+    n_clusters = nrow(cor_matrix),
+    n_comparisons = nrow(cor_long),
+    mean_correlation = mean(cor_long$correlation, na.rm = TRUE),
+    median_correlation = median(cor_long$correlation, na.rm = TRUE),
+    min_correlation = min(cor_long$correlation, na.rm = TRUE),
+    max_correlation = max(cor_long$correlation, na.rm = TRUE),
+    sd_correlation = sd(cor_long$correlation, na.rm = TRUE),
+    most_similar_pair = paste(cor_long$cluster1[which.max(cor_long$correlation)], 
+                             "vs", 
+                             cor_long$cluster2[which.max(cor_long$correlation)]),
+    least_similar_pair = paste(cor_long$cluster1[which.min(cor_long$correlation)], 
+                              "vs", 
+                              cor_long$cluster2[which.min(cor_long$correlation)])
+  )
+})
+
+cat("RANK CORRELATION SUMMARY BY DIMENSION:\n")
+print(rank_correlation_summary %>% 
+      select(dimension, n_clusters, mean_correlation, min_correlation, max_correlation) %>%
+      arrange(desc(mean_correlation)))
+
+cat("\nDimensions with highest average rank correlations (most similar rankings):\n")
+print(rank_correlation_summary %>% 
+      arrange(desc(mean_correlation)) %>%
+      select(dimension, mean_correlation, most_similar_pair))
+
+cat("\nDimensions with lowest average rank correlations (most diverse rankings):\n")
+print(rank_correlation_summary %>% 
+      arrange(mean_correlation) %>%
+      select(dimension, mean_correlation, least_similar_pair))
+
+# Identify most consensual and most polarizing items across all clusters
+consensus_analysis <- map_dfr(dimensions, function(dim_name) {
+  ranks_data <- spearman_results[[dim_name]]$ranks %>%
+    rownames_to_column("item")
+  
+  # Calculate rank variability for each item
+  rank_variability <- ranks_data %>%
+    pivot_longer(-item, names_to = "cluster", values_to = "rank") %>%
+    group_by(item) %>%
+    summarise(
+      rank_sd = sd(rank, na.rm = TRUE),
+      rank_range = max(rank, na.rm = TRUE) - min(rank, na.rm = TRUE),
+      mean_rank = mean(rank, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(dimension = dim_name)
+  
+  return(rank_variability)
+})
+
+cat("\nMost consensual items (lowest rank variability across clusters):\n")
+most_consensual <- consensus_analysis %>%
+  group_by(item) %>%
+  summarise(avg_rank_sd = mean(rank_sd, na.rm = TRUE), .groups = "drop") %>%
+  arrange(avg_rank_sd) %>%
+  slice_head(n = 5)
+print(most_consensual)
+
+cat("\nMost polarizing items (highest rank variability across clusters):\n")
+most_polarizing <- consensus_analysis %>%
+  group_by(item) %>%
+  summarise(avg_rank_sd = mean(rank_sd, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(avg_rank_sd)) %>%
+  slice_head(n = 5)
+print(most_polarizing)
+```
+
+# Summary and Insights
+
+## Key Findings
+
+```{r summary_insights}
+# Generate overall summary statistics
+overall_stats <- list(
+  n_cluster_dimensions = length(dimensions),
+  n_total_clusters = nrow(cluster_means),
+  n_items = length(item_cols),
+  n_personas = n_distinct(llm_user_scores$user_id)
+)
+
+# Best performing clusters overall
+best_clusters <- cluster_means_long %>%
+  group_by(dimension, cluster) %>%
+  summarise(
+    avg_utility = mean(mean_score, na.rm = TRUE),
+    n_personas = first(n_personas),
+    .groups = "drop"
+  ) %>%
+  slice_max(avg_utility, n = 5) %>%
+  arrange(desc(avg_utility))
+
+# Most variable dimensions
+dimension_variability <- cluster_variation_summary %>%
+  group_by(dimension) %>%
+  summarise(
+    mean_variability = mean(between_cluster_var, na.rm = TRUE),
+    total_clusters = n_distinct(cluster_means$cluster[cluster_means$dimension == dimension[1]]),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(mean_variability))
+
+cat("ANALYSIS SUMMARY\n")
+cat("================\n\n")
+
+cat("Dataset Overview:\n")
+cat("- Total cluster dimensions analyzed:", overall_stats$n_cluster_dimensions, "\n")
+cat("- Total unique clusters:", overall_stats$n_total_clusters, "\n") 
+cat("- Items evaluated:", overall_stats$n_items, "\n")
+cat("- Personas analyzed:", overall_stats$n_personas, "\n\n")
+
+cat("Best Performing Clusters (highest average utility):\n")
+print(best_clusters)
+
+cat("\nDimensions by Cluster Variability (most differentiated):\n")
+print(dimension_variability)
+
+cat("\nItems with Extreme Preferences:\n")
+extreme_items <- item_preference_patterns %>%
+  filter(abs(overall_mean) > 0.3) %>%
+  arrange(desc(abs(overall_mean))) %>%
+  select(item, overall_mean, min_cluster_score, max_cluster_score)
+
+print(extreme_items)
+```

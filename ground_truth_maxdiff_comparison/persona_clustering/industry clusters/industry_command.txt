@@ -1,0 +1,1 @@
+python3 persona_clustering.py UXR_personas.txt --use-classification --method dbscan --classification-method classification --dimensions industry --viz tsne --output dbscan_results

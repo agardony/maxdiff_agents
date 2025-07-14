@@ -63,7 +63,7 @@ colors <- list(
 
 ```{r load_human_data}
 # Read Excel data with approach
-human_data <- read_excel("QUX Survey 2024 - Future Classes - MaxDiff Individual raw scores.xlsx") %>%
+human_data <- read_excel("../maxdiff_data/QUX Survey 2024 - Future Classes - MaxDiff Individual raw scores.xlsx") %>%
   select(-Anchor) %>%  # Remove anchor column
   clean_names()  # Clean column names
 
@@ -101,7 +101,7 @@ cat("Number of items:", length(human_class_cols), "\n")
 
 ```{r load_llm_data}
 # Read LLM responses data
-llm_responses <- read_csv("maxdiff_responses_20250623_150739.csv")
+llm_responses <- read_csv("../maxdiff_data/maxdiff_responses.csv")
 
 # Create a mapping of long names to short names
 name_mapping <- c(
