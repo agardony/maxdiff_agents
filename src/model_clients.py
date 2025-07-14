@@ -17,8 +17,10 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 try:
     from .types import MaxDiffItem, TrialSet, ModelResponse, EngineConfig, ModelConfig
+    from .config_utils import get_validated_model_params
 except ImportError:
     from src.types import MaxDiffItem, TrialSet, ModelResponse, EngineConfig, ModelConfig
+    from src.config_utils import get_validated_model_params
 
 
 class MaxDiffResponse(BaseModel):
@@ -52,10 +54,6 @@ class MaxDiffResponse(BaseModel):
         if self.best_item == self.worst_item:
             raise ValueError('Best and worst items must be different')
         return self
-
-
-# Note: pydantic_to_gemini_schema converter removed - new Google GenAI SDK supports Pydantic models directly
-
 
 def retry_with_backoff(config: ModelConfig = None):
     """Decorator that implements exponential backoff retry logic for async functions."""
@@ -284,16 +282,18 @@ class OpenAIClient(ModelClient):
     @retry_with_backoff()
     async def _make_api_call(self, prompt: str, trial: TrialSet) -> MaxDiffResponse:
         """Make the actual API call with retry logic using Pydantic response format."""
-        import os
+        # Get validated parameters for OpenAI
+        params = get_validated_model_params('openai')
+        
         response = await self.client.beta.chat.completions.parse(
             model=self.model_name,
             messages=[
                 {"role": "user", "content": prompt}
             ],
             response_format=MaxDiffResponse,
-            temperature=float(os.getenv('LLM_TEMPERATURE', 0.8)),
-            max_tokens=int(os.getenv('LLM_MAX_TOKENS', 500)),
-            top_p=float(os.getenv('LLM_TOP_P', 0.9))
+            temperature=params['temperature'],
+            max_tokens=params['max_tokens'],
+            top_p=params['top_p']
         )
         
         parsed_response = response.choices[0].message.parsed
@@ -373,13 +373,14 @@ Make sure best_item and worst_item are different numbers."""
     @retry_with_backoff()
     async def _make_api_call_structured(self, prompt: str, trial: TrialSet) -> MaxDiffResponse:
         """Make the actual API call with retry logic using Instructor structured output."""
-        import os
+        # Get validated parameters for Anthropic
+        params = get_validated_model_params('anthropic')
         
         response = await self.client.messages.create(
             model=self.model_name,
-            max_tokens=int(os.getenv('LLM_MAX_TOKENS', 500)),
-            temperature=float(os.getenv('LLM_TEMPERATURE', 0.8)),
-            top_p=float(os.getenv('LLM_TOP_P', 0.9)),
+            max_tokens=params['max_tokens'],
+            temperature=params['temperature'],
+            top_p=params['top_p'],
             messages=[{"role": "user", "content": prompt}],
             response_model=MaxDiffResponse
         )
@@ -395,12 +396,14 @@ Make sure best_item and worst_item are different numbers."""
     @retry_with_backoff()
     async def _make_api_call(self, prompt: str) -> str:
         """Make the actual API call with retry logic (fallback method)."""
-        import os
+        # Get validated parameters for Anthropic
+        params = get_validated_model_params('anthropic')
+        
         response = await self.base_client.messages.create(
             model=self.model_name,
-            max_tokens=int(os.getenv('LLM_MAX_TOKENS', 500)),
-            temperature=float(os.getenv('LLM_TEMPERATURE', 0.8)),
-            top_p=float(os.getenv('LLM_TOP_P', 0.9)),
+            max_tokens=params['max_tokens'],
+            temperature=params['temperature'],
+            top_p=params['top_p'],
             messages=[{"role": "user", "content": prompt}]
         )
         return response.content[0].text
@@ -467,7 +470,8 @@ Make sure best_item and worst_item are different numbers."""
     @retry_with_backoff()
     async def _make_api_call_structured(self, prompt: str, trial: TrialSet) -> MaxDiffResponse:
         """Make the actual API call with retry logic using the new Gemini SDK with direct Pydantic support."""
-        import os
+        # Get validated parameters for Google
+        params = get_validated_model_params('google')
         
         # Use the new Google GenAI SDK with direct Pydantic support
         # Google's API is not async, so we run it in a thread pool
@@ -480,9 +484,9 @@ Make sure best_item and worst_item are different numbers."""
                 config={
                     "response_mime_type": "application/json",
                     "response_schema": MaxDiffResponse,
-                    "temperature": float(os.getenv('LLM_TEMPERATURE', 0.8)),
-                    "max_output_tokens": int(os.getenv('LLM_MAX_TOKENS', 500)),
-                    "top_p": float(os.getenv('LLM_TOP_P', 0.9)),
+                    "temperature": params['temperature'],
+                    "max_output_tokens": params['max_tokens'],
+                    "top_p": params['top_p'],
                 }
             )
         )
