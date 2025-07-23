@@ -1,0 +1,969 @@
+---
+title: "MaxDiff Analysis: Human vs LLM Mixed Model Variability Investigation"
+author: "Aaron Gardony <agardony@gmail.com>"
+date: "`r Sys.Date()`"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, 
+                      fig.width = 12, fig.height = 8, dpi = 300)
+```
+
+# Introduction
+
+This notebook compares MaxDiff survey results between human UX researchers (N=308) and LLM-simulated responses using 103 UX researcher personas across 3 different large language models (GPT, Claude, Gemini) with N=309 LLM users total. Both datasets evaluate the same 14 potential UX research classes. This analysis used Hierarchical Bayesian Multinomial Models to model individual choice behavior between human and LLM users.
+
+# Data Loading and Preparation
+
+## Load Required Libraries
+
+```{r libraries}
+# Core tidyverse
+library(tidyverse)
+library(readxl)
+
+# Visualization and styling
+library(ggplot2)
+library(ggtext)
+library(patchwork)
+library(scales)
+library(viridis)
+
+# Data manipulation and stats
+library(broom)
+library(janitor)
+
+# Tables
+library(kableExtra)
+library(gt)
+
+# Set ggplot theme
+theme_set(theme_minimal(base_size = 12, base_family = "sans"))
+
+# Define a color palette as a list
+colors <- list(
+  primary = "#2E86AB",
+  secondary = "#A23B72", 
+  accent = "#F18F01",
+  neutral = "#C73E1D",
+  success = "#06D6A0",
+  light_gray = "#F8F9FA",
+  medium_gray = "#6C757D",
+  gpt_color = "#10A37F",      # OpenAI green
+  claude_color = "#CC785C",    # Anthropic orange
+  gemini_color = "#4285F4"     # Google blue
+)
+```
+
+## Load Human Data (Original Study)
+
+```{r load_human_data}
+# Read Excel data with approach
+human_data <- read_excel("../maxdiff_data/QUX Survey 2024 - Future Classes - MaxDiff Individual raw scores.xlsx") |>
+  select(-Anchor) |>  # Remove anchor column
+  clean_names()  # Clean column names
+
+human_data_indiv_choices <- read_excel("../maxdiff_data/QUX Survey_ Spring '24 - MaxDiff_Future Programming Design & choices (1).xlsx") |> 
+  clean_names()
+
+# Assign friendly names using a named vector
+column_mapping <- c(
+  "Choice Models" = "choice_models",
+  "Surveys" = "surveys", 
+  "Log Sequences" = "log_sequences",
+  "Psychometrics" = "psychometrics",
+  "R Programming" = "r_programming",
+  "Pricing" = "pricing",
+  "UX Metrics" = "ux_metrics",
+  "Bayes Stats" = "bayes_stats",
+  "Text Analytics" = "text_analytics",
+  "Causal Models" = "causal_models",
+  "Interviewer-ing" = "interviewer_ing",
+  "Advanced Choice" = "advanced_choice",
+  "Segmentation" = "segmentation",
+  "Metrics Sprints" = "metrics_sprints"
+)
+
+# Apply the mapping by position (columns 3-16)
+names(human_data)[3:16] <- names(column_mapping)
+names(human_data_indiv_choices$item) <- names(column_mapping[human_data_indiv_choices$item])
+
+
+# Get class column names
+human_class_cols <- names(human_data)[3:16]
+
+# Data summary
+cat("Human data dimensions:", dim(human_data), "\n")
+cat("Number of respondents:", nrow(human_data), "\n")
+cat("Number of items:", length(human_class_cols), "\n")
+```
+
+## Load and Process LLM Data with Model Splits
+
+```{r load_llm_data}
+# Read LLM responses data
+llm_responses <- read_csv("../maxdiff_data/temp_0.8/maxdiff_responses.csv")
+
+# Create a mapping of long names to short names
+class_names<- c(
+  "Choice Modeling Hands-On: Introduction to Conjoint Analysis and MaxDiff",
+  "Survey Masterclass: Intensive Review of Best Practices for Online Surveys", 
+  "Log Sequence Analysis: Tools to Visualize, Model, and Understand Instrument Logs",
+  "Psychometrics for Survey Scales: Reliability and Validity Assessment for Practitioners",
+  "R-Intensive: In-Person R Programming Bootcamp for Social Scientists in Industry",
+  "The Price is Right: Best Practices in Pricing Research",
+  "HEART UX Metrics Deep Dive: From Best Practices to Leading HEART Workshops with Your Team",
+  "Introduction to Bayesian Statistics: Linear and Hierarchical Linear Bayesian Models in R",
+  "Text Analytics 0 to 60: Sentiment Analysis and Topic Modeling with Natural Language Texts",
+  "Yes, It is Causation, and not Correlation: Models for Causal Inference in R",
+  "Interviewer Training: Improving Your Team's Quant UX Interview Process",
+  "Advanced Choice Modeling Surveys: Advanced Options Beyond Standard Conjoint and MaxDiff",
+  "Segmentation: Running a Successful Segmentation Effort, from the Models through Team Politics",
+  "UX Metrics Sprintmaster Training: How to Lead UX Metrics Sprints"
+)
+
+# Create a mapping of long names to short names
+name_mapping <- c(
+  "Choice Modeling Hands-On: Introduction to Conjoint Analysis and MaxDiff" = "Choice Models",
+  "Survey Masterclass: Intensive Review of Best Practices for Online Surveys" = "Surveys", 
+  "Log Sequence Analysis: Tools to Visualize, Model, and Understand Instrument Logs" = "Log Sequences",
+  "Psychometrics for Survey Scales: Reliability and Validity Assessment for Practitioners" = "Psychometrics",
+  "R-Intensive: In-Person R Programming Bootcamp for Social Scientists in Industry" = "R Programming",
+  "The Price is Right: Best Practices in Pricing Research" = "Pricing",
+  "HEART UX Metrics Deep Dive: From Best Practices to Leading HEART Workshops with Your Team" = "UX Metrics",
+  "Introduction to Bayesian Statistics: Linear and Hierarchical Linear Bayesian Models in R" = "Bayes Stats",
+  "Text Analytics 0 to 60: Sentiment Analysis and Topic Modeling with Natural Language Texts" = "Text Analytics",
+  "Yes, It is Causation, and not Correlation: Models for Causal Inference in R" = "Causal Models",
+  "Interviewer Training: Improving Your Team's Quant UX Interview Process" = "Interviewer-ing",
+  "Advanced Choice Modeling Surveys: Advanced Options Beyond Standard Conjoint and MaxDiff" = "Advanced Choice",
+  "Segmentation: Running a Successful Segmentation Effort, from the Models through Team Politics" = "Segmentation",
+  "UX Metrics Sprintmaster Training: How to Lead UX Metrics Sprints" = "Metrics Sprints"
+)
+
+# Calculate individual-level utility scores using tidyverse
+llm_responses <- llm_responses |>
+  mutate(
+    user_id = str_c(model_name, persona_index, sep = "_"),
+    model_clean = case_when(
+      str_detect(tolower(model_name), "gpt") ~ "GPT",
+      str_detect(tolower(model_name), "claude") ~ "Claude", 
+      str_detect(tolower(model_name), "gemini") ~ "Gemini",
+      TRUE ~ model_name
+    )
+  )
+
+# Check model distribution
+llm_responses |> 
+  count(model_clean, model_name) |>
+  arrange(model_clean) |>
+  print()
+
+# approach to calculate user-item scores
+calc_user_item_scores <- function(responses_df) {
+  # Get all unique items
+  all_items <- responses_df |>
+    select(best_item_name, worst_item_name) |>
+    pivot_longer(everything(), values_to = "item_name") |>
+    filter(!is.na(item_name)) |>
+    distinct(item_name) |>
+    pull(item_name)
+  
+  # Count best/worst selections
+  best_counts <- responses_df |>
+    filter(!is.na(best_item_name)) |>
+    count(user_id, best_item_name, name = "best_count") |>
+    rename(item_name = best_item_name)
+  
+  worst_counts <- responses_df |>
+    filter(!is.na(worst_item_name)) |>
+    count(user_id, worst_item_name, name = "worst_count") |>
+    rename(item_name = worst_item_name)
+  
+  # Count appearances using map approach
+  appearance_counts <- responses_df |>
+    filter(!is.na(trial_items)) |>
+    select(user_id, trial_items) |>
+    crossing(item_name = all_items) |>
+    mutate(
+      appears = map2_lgl(trial_items, item_name, ~str_detect(.x, fixed(.y)))
+    ) |>
+    filter(appears) |>
+    count(user_id, item_name, name = "appearance_count")
+  
+  # Combine all counts
+  all_users <- unique(responses_df$user_id)
+  
+  results <- crossing(user_id = all_users, item_name = all_items) |>
+    left_join(best_counts, by = c("user_id", "item_name")) |>
+    left_join(worst_counts, by = c("user_id", "item_name")) |>
+    left_join(appearance_counts, by = c("user_id", "item_name")) |>
+    replace_na(list(best_count = 0, worst_count = 0, appearance_count = 0)) |>
+    mutate(
+      best_rate = if_else(appearance_count > 0, best_count / appearance_count, 0),
+      worst_rate = if_else(appearance_count > 0, worst_count / appearance_count, 0),
+      utility_score = best_rate - worst_rate
+    )
+  
+  return(results)
+}
+
+# Calculate user-item scores for LLM data (preserving model info)
+llm_user_scores <- calc_user_item_scores(llm_responses)
+
+# Add model information back to scores
+model_mapping <- llm_responses |>
+  select(user_id, model_clean) |>
+  distinct()
+
+llm_user_scores <- llm_user_scores |>
+  left_join(model_mapping, by = "user_id")
+
+# approach to create wide format data
+create_wide_format <- function(long_data, name_mapping, include_model = FALSE) {
+  # Prepare the base data
+  base_data <- long_data |>
+    mutate(short_name = name_mapping[item_name]) |>
+    filter(!is.na(short_name))
+  
+  # Handle column selection based on include_model flag
+  if (include_model) {
+    selected_data <- base_data |>
+      select(user_id, short_name, utility_score, model_clean)
+    id_cols <- c("user_id", "model_clean")
+  } else {
+    selected_data <- base_data |>
+      select(user_id, short_name, utility_score)
+    id_cols <- "user_id"
+  }
+  
+  # Create wide format
+  wide_data <- selected_data |>
+    pivot_wider(
+      names_from = short_name,
+      values_from = utility_score,
+      values_fill = 0,
+      id_cols = all_of(id_cols)
+    ) |>
+    rename(Record.ID = user_id)
+  
+  return(wide_data)
+}
+
+# Create wide format data for all LLM models combined
+llm_wide_all <- create_wide_format(llm_user_scores, name_mapping, include_model = TRUE)
+
+# Create separate datasets for each model
+llm_wide_gpt <- llm_user_scores |>
+  filter(model_clean == "GPT") |>
+  create_wide_format(name_mapping) 
+
+llm_wide_claude <- llm_user_scores |>
+  filter(model_clean == "Claude") |>
+  create_wide_format(name_mapping)
+
+llm_wide_gemini <- llm_user_scores |>
+  filter(model_clean == "Gemini") |>
+  create_wide_format(name_mapping)
+
+# Remove model column from combined dataset for consistency
+llm_wide_combined <- llm_wide_all |>
+  select(-model_clean)
+
+# Find common items between datasets
+common_items <- intersect(human_class_cols, names(llm_wide_combined)[-1])
+
+# Create aligned datasets with only common items
+human_data_subset <- human_data |>
+  select(record_id, all_of(common_items))
+
+llm_wide_combined <- llm_wide_combined |>
+  select(Record.ID, all_of(common_items))
+
+llm_wide_gpt <- llm_wide_gpt |>
+  select(Record.ID, all_of(common_items))
+
+llm_wide_claude <- llm_wide_claude |>
+  select(Record.ID, all_of(common_items))
+
+llm_wide_gemini <- llm_wide_gemini |>
+  select(Record.ID, all_of(common_items))
+
+cat("\nDataset dimensions:\n")
+cat("Human data:", dim(human_data_subset), "\n")
+cat("LLM Combined:", dim(llm_wide_combined), "\n")
+cat("GPT data:", dim(llm_wide_gpt), "\n")
+cat("Claude data:", dim(llm_wide_claude), "\n")
+cat("Gemini data:", dim(llm_wide_gemini), "\n")
+```
+# Convert LLM responses to long format
+
+```{r convert_llm_responses_to_long}
+library(tidyr)
+
+# Create item lookup table from class_names
+item_lookup <- tibble(
+  item_name = as.character(class_names),
+  item = 1:length(class_names)
+)
+
+# Function to format LLM responses to match human_data_indiv_choices structure
+format_llm_to_individual_choices <- function(data) {
+  
+  formatted_data <- data %>%
+    mutate(original_row_id = row_number()) %>%
+    # Use pattern matching to find which class_names appear in each trial_items string
+    rowwise() %>%
+    mutate(
+      matched_items = list({
+        matches <- character(0)
+        for(class_name in as.character(class_names)) {
+          if(str_detect(trial_items, fixed(class_name))) {
+            matches <- c(matches, class_name)
+          }
+        }
+        matches
+      })
+    ) %>%
+    ungroup() %>%
+    # Unnest to create separate rows for each matched item
+    unnest(matched_items) %>%
+    # Join with item lookup table to get numeric item IDs
+    left_join(item_lookup, by = c("matched_items" = "item_name")) %>%
+    # Strip names from item column to get just numeric values
+    mutate(item = as.numeric(item)) %>%
+    # Create position within each original trial (1-5 for each original row)
+    group_by(original_row_id) %>%
+    mutate(position = row_number()) %>%
+    ungroup() %>%
+    # Create response column based on best/worst item selections
+    mutate(
+      response = case_when(
+        matched_items == best_item_name ~ 1,   # best choice gets 1
+        matched_items == worst_item_name ~ -1, # worst choice gets -1
+        TRUE ~ 0                               # not selected items get 0
+      )
+    ) %>%
+    # Select and rename columns to match human_data_indiv_choices format
+    select(
+      record_id = user_id,
+      task = trial_number,
+      position,
+      item,
+      response
+    ) %>%
+    filter(!is.na(item)) %>%
+    arrange(record_id, task, position)
+  
+  return(formatted_data)
+}
+
+# Apply the transformation
+llm_responses_formatted <- format_llm_to_individual_choices(llm_responses)
+```
+
+# Hierarchical Bayesian Multinomial Model - Human Data
+
+```{r bayesian_mixed_modeling_human_responses}
+library(afex)
+library(brms)
+library(cmdstanr)
+
+afex::set_sum_contrasts()
+
+# convert numeric responses to strings for compatibility with brms
+human_data_indiv_choices <- human_data_indiv_choices %>%
+  mutate(
+    response = case_when(
+      response == 1 ~ "best",
+      response == -1 ~ "worst", 
+      response == 0 ~ "neither"
+    )
+  )
+
+# factor conversion
+human_data_indiv_choices <- human_data_indiv_choices |> mutate(across(everything(), factor))
+human_data_indiv_choices$item <- as.factor(unname(human_data_indiv_choices$item)) # strip the names
+
+
+model_human_categorical_brms <- brm(
+  bf(response ~ 0 + item + (0+item | ID | record_id)),
+  data = human_data_indiv_choices,
+  family = categorical(refcat = "worst"),
+  prior = c(
+    prior(normal(0, 3), class = b, dpar = mubest),
+    prior(normal(0, 3), class = b, dpar = muneither),
+    prior(exponential(1), class = sd, dpar = mubest),
+    prior(exponential(1), class = sd, dpar = muneither)
+  ),
+  chains = 4, cores = 4, iter = 2000, seed = 1234,
+  silent = 0,
+  backend = "cmdstanr", threads = threading(2),# refresh = 0,
+  file = "model_human_categorical_brms"
+)
+
+model_human_categorical_brms_null <- brm(
+  bf(response ~ 0 + item),
+  data = human_data_indiv_choices,
+  family = categorical(refcat = "worst"),
+  prior = c(
+    prior(normal(0, 3), class = b, dpar = mubest),
+    prior(normal(0, 3), class = b, dpar = muneither)
+  ),
+  chains = 4, cores = 4, iter = 2000, seed = 1234,
+  backend = "cmdstanr", threads = threading(2),# refresh = 0,
+  file = "model_human_categorical_brms_null",
+  silent=0
+)
+
+model_human_categorical_brms <- add_criterion(model_human_categorical_brms, "loo")
+model_human_categorical_brms_null <- add_criterion(model_human_categorical_brms_null, "loo")
+
+loo_compare(model_human_categorical_brms, model_human_categorical_brms_null)
+```
+
+## Inspect Model
+
+```{r inspect_human_bayes_models}
+summary(model_human_categorical_brms)
+posterior_summary(model_human_categorical_brms, robust = TRUE)
+library(tidybayes)
+
+(utilities_human <- fixef(model_human_categorical_brms)[grepl("mubest", rownames(fixef(model_human_categorical_brms))), "Estimate"])
+
+# Extract mubest coefficients (utilities) with full posterior distributions
+human_model_utilities <- model_human_categorical_brms %>% 
+  gather_draws(`^b_mubest_.*$`, regex = TRUE) %>% 
+  # Clean up variable names by removing the "b_mubest_" prefix
+  mutate(.variable = str_remove(.variable, "^b_mubest_"))
+
+# Create the plot
+human_model_utilities %>% 
+  ggplot(aes(x = .value, y = .variable)) +
+  stat_halfeye() +
+  labs(
+    x = "Posterior distribution of utilities (logit-scale)", 
+    y = "Items",
+    title = "Item Utilities: Preference for Being Chosen as Best"
+  ) +
+  theme_minimal()
+
+
+# Extract random slopes for each user/item combo
+human_model_random_slopes <- model_human_categorical_brms %>% 
+  gather_draws(`^r_record_id__mubest\\[.*,.*\\]$`, regex = TRUE) %>% 
+  # Clean up variable names to extract user IDs and item names
+  separate_wider_regex(
+    .variable,
+    patterns = c(
+      "r_record_id__mubest\\[", 
+      user_id = "[^,]+", 
+      ",",
+      item_name = "[^\\]]+",
+      "\\]"
+    )
+  )
+
+human_model_fixed_effects <- model_human_categorical_brms %>% 
+  gather_draws(`^b_mubest_item\\d+$`, regex = TRUE) %>% 
+  # Clean up variable names to extract item names
+  separate_wider_regex(
+    .variable,
+    patterns = c(
+      "b_mubest_", 
+      item_name = "item\\d+"
+    )
+  )
+
+# Overall distribution of random slopes across all users
+human_model_random_slopes %>%
+  ggplot(aes(x = .value)) +
+  geom_density(alpha = 0.7, fill = "steelblue") +
+  labs(
+    x = "Random slope values", 
+    y = "Density",
+    title = "Distribution of Individual Human User Random Slope Posterior Draws"
+  ) +
+  facet_wrap(~item_name, ncol = 4) +
+  theme_minimal()
+
+# Overall distribution of fixed effects across users
+human_model_fixed_effects |> 
+  ggplot(aes(x = .value)) +
+  geom_density(alpha = 0.7, fill = "steelblue") +
+  labs(
+    x = "Fixed effect vaues", 
+    y = "Density",
+    title = "Distribution of Fixed Effect Posterior Draws"
+  ) +
+  facet_wrap(~item_name, ncol = 4) +
+  theme_minimal()
+```
+
+# Hierarchical Bayesian Multinomial Model - LLM Data
+
+```{r bayesian_mixed_modeling_llm_responses}
+library(brms)
+library(cmdstanr)
+
+# convert numeric responses to strings for compatibility with brms
+llm_responses_formatted <- llm_responses_formatted %>%
+  mutate(
+    response = case_when(
+      response == 1 ~ "best",
+      response == -1 ~ "worst", 
+      response == 0 ~ "neither"
+    )
+  )
+
+# factor conversion
+llm_responses_formatted <- llm_responses_formatted |> mutate(across(everything(), factor))
+llm_responses_formatted$item <- as.factor(unname(llm_responses_formatted$item)) # strip the names
+
+afex::set_sum_contrasts()
+
+model_llm_categorical_brms <- brm(
+  bf(response ~ 0 + item + (0 + item | ID | record_id)),
+  data = llm_responses_formatted,
+  family = categorical(refcat = "worst"),
+  prior = c(
+    prior(normal(0, 3), class = b, dpar = mubest),
+    prior(normal(0, 3), class = b, dpar = muneither),
+    prior(exponential(1), class = sd, dpar = mubest),
+    prior(exponential(1), class = sd, dpar = muneither)
+  ),
+  chains = 4, cores = 4, iter = 2000, seed = 1234,
+  backend = "cmdstanr",threads = threading(2),# refresh = 0,
+  file = "model_llm_categorical_brms",
+  silent = 0
+)
+
+model_llm_categorical_brms_null <- brm(
+  bf(response ~ 0 + item),
+  data = llm_responses_formatted,
+  family = categorical(refcat = "worst"),
+  prior = c(
+    prior(normal(0, 3), class = b, dpar = mubest),
+    prior(normal(0, 3), class = b, dpar = muneither)
+  ),
+  chains = 4, cores = 4, iter = 2000, seed = 1234,
+  backend = "cmdstanr", threads = threading(2),# refresh = 0,
+  file = "model_llm_categorical_brms_null",
+  silent = 0
+)
+model_llm_categorical_brms <- add_criterion(model_llm_categorical_brms, "loo")
+model_llm_categorical_brms_null <- add_criterion(model_llm_categorical_brms_null, "loo")
+
+loo_compare(model_llm_categorical_brms, model_llm_categorical_brms_null)
+```
+
+# Inspect Model
+
+```{r inspect_llm_bayes_models}
+summary(model_llm_categorical_brms)
+posterior_summary(model_llm_categorical_brms, robust = TRUE)
+library(tidybayes)
+
+(utilities_human <- fixef(model_llm_categorical_brms)[grepl("mubest", rownames(fixef(model_llm_categorical_brms))), "Estimate"])
+
+# Extract mubest coefficients (utilities) with full posterior distributions
+llm_model_utilities <- model_llm_categorical_brms %>% 
+  gather_draws(`^b_mubest_.*$`, regex = TRUE) %>% 
+  # Clean up variable names by removing the "b_mubest_" prefix
+  mutate(.variable = str_remove(.variable, "^b_mubest_"))
+
+# Create the plot
+llm_model_utilities %>% 
+  ggplot(aes(x = .value, y = .variable)) +
+  stat_halfeye() +
+  labs(
+    x = "Posterior distribution of utilities (logit-scale)", 
+    y = "Items",
+    title = "Item Utilities: Preference for Being Chosen as Best"
+  ) +
+  theme_minimal()
+
+
+# Extract random slopes for each user/item combo
+llm_model_random_slopes <- model_llm_categorical_brms %>% 
+  gather_draws(`^r_record_id__mubest\\[.*,.*\\]$`, regex = TRUE) %>% 
+  # Clean up variable names to extract user IDs and item names
+  separate_wider_regex(
+    .variable,
+    patterns = c(
+      "r_record_id__mubest\\[", 
+      user_id = "[^,]+", 
+      ",",
+      item_name = "[^\\]]+",
+      "\\]"
+    )
+  )
+
+llm_model_fixed_effects <- model_llm_categorical_brms %>% 
+  gather_draws(`^b_mubest_item\\d+$`, regex = TRUE) %>% 
+  # Clean up variable names to extract item names
+  separate_wider_regex(
+    .variable,
+    patterns = c(
+      "b_mubest_", 
+      item_name = "item\\d+"
+    )
+  )
+
+# Overall distribution of random slopes across all LLM users
+llm_model_random_slopes %>%
+  ggplot(aes(x = .value)) +
+  geom_density(alpha = 0.7, fill = "steelblue") +
+  labs(
+    x = "Random slope values", 
+    y = "Density",
+    title = "Distribution of Individual LLM User Random Slope Posterior Draws"
+  ) +
+  facet_wrap(~item_name, ncol = 4) +
+  theme_minimal()
+
+# Overall distribution of fixed effects across users
+llm_model_fixed_effects |> 
+  ggplot(aes(x = .value)) +
+  geom_density(alpha = 0.7, fill = "steelblue") +
+  labs(
+    x = "Fixed effect vaues", 
+    y = "Density",
+    title = "Distribution of Fixed Effect Posterior Draws"
+  ) +
+  facet_wrap(~item_name, ncol = 4) +
+  theme_minimal()
+
+
+```
+
+# Plot Fixed and Random Effects
+
+```{r}
+list(human_model_fixed_effects, llm_model_fixed_effects) %>%
+  set_names(c("human", "llm")) %>%
+  bind_rows(.id = "user_type") -> combined_fixed_effect_posterior_draws
+
+short_names <- as.character(name_mapping)
+names(short_names) <- paste0("item", 1:length(name_mapping))
+
+combined_fixed_effect_posterior_draws %>%
+  # Create ordered factor with short names
+  mutate(
+    item_short = short_names[item_name],
+    item_short = factor(item_short, 
+                       levels = short_names[paste0("item", 1:14)])  # Adjust number as needed
+  ) |>
+  ggplot(aes(x = .value, color = user_type, fill = user_type)) +
+  geom_density(alpha = 0.1, position = "stack") +
+  facet_wrap(~item_short, ncol = 4) +  # Use item_short instead of item_name
+  xlab("Fixed Effect Posterior Distribution") + 
+  scale_color_manual(name = "User Type",
+                    labels = c("Human", "AI"), 
+                    values = c("#E69F00", "#0072B2")) +
+  scale_fill_manual(name = "User Type",
+                    labels = c("Human", "AI"), 
+                    values = c("#E69F00", "#0072B2"))
+
+combined_fixed_effect_posterior_draws %>%
+    # Create ordered factor with short names
+    mutate(
+        item_short = short_names[item_name],
+        item_short = factor(item_short, 
+                            levels = short_names[paste0("item", 1:14)])  # Adjust number as needed
+    ) |>
+    group_by(user_type, item_short) |> 
+    summarize(var_eff = var(.value)) |>
+  ggplot(aes(x = item_short, y = var_eff, fill = user_type, color = user_type)) + 
+  geom_col(position = "dodge") + 
+  scale_color_manual(name = "User Type",
+                    labels = c("Human", "AI"), 
+                    values = c("#E69F00", "#0072B2")) +
+  scale_fill_manual(name = "User Type",
+                    labels = c("Human", "AI"), 
+                    values = c("#E69F00", "#0072B2"))
+
+
+##### Production Charts ##### 
+
+# Chart 1: Between-User Variability (Fixed Effects)
+p1 <- combined_fixed_effect_posterior_draws %>%
+  mutate(
+    item_short = short_names[item_name],
+    item_short = factor(item_short, 
+                       levels = short_names[paste0("item", 1:14)])
+  ) |>
+  ggplot(aes(x = .value, fill = user_type)) +
+  geom_density(alpha = 0.6) +
+  facet_wrap(~item_short, ncol = 4, scales = "free") +
+  labs(
+    title = "How Does Human and LLM Users' Item Choice Behavior Differ on Average?",
+    subtitle = "Posterior distributions of item fixed effects (aggregated across users)",
+    x = "Average Choice Effect (Across Users)",
+    y = "",
+    fill = "User Type",
+    caption = "Larger numbers indicate greater preference; spread indicates aggregated preference variability."
+  ) +
+  scale_fill_manual(
+    labels = c("Human", "AI"), 
+    values = c("#E69F00", "#0072B2")
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 11, color = "gray30"),
+    strip.text = element_text(size = 10, face = "bold"),
+    legend.position = "bottom",
+    plot.caption = element_text(size = 9, color = "gray50", hjust = 0),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+
+# Chart 2: Within-User Variability (Random Slopes)
+p2 <- combined_random_slopes_posterior_draws %>%
+  mutate(
+    item_short = short_names[item_name],
+    item_short = factor(item_short, 
+                       levels = short_names[paste0("item", 1:14)])
+  ) |>
+  group_by(user_type, user_id, item_short) |> 
+  summarize(var_eff = var(.value), .groups = "drop") |>
+  ggplot(aes(x = var_eff, fill = user_type, color = user_type)) + 
+  geom_density(aes(y = after_stat(scaled)), alpha = 0.6) + 
+  facet_wrap(~item_short, ncol = 4, scales = "free_x") +
+  labs(
+  title = "How Internally Consistent Is Each User's Responses?", 
+  subtitle = "Distribution of by-user variances of choice item random slopes (one variance per user-item combo)",
+  x = "Within-User Internal Response Variance",
+  y = "",
+  fill = "User Type",
+  color = "User Type",
+  caption = "Higher values indicated greater internal response variability."
+) +
+  scale_color_manual(
+    name = "User Type",
+    labels = c("Human", "AI"), 
+    values = c("#E69F00", "#0072B2")
+  ) +
+  scale_fill_manual(
+    name = "User Type",
+    labels = c("Human", "AI"), 
+    values = c("#E69F00", "#0072B2")
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 11, color = "gray30"),
+    strip.text = element_text(size = 10, face = "bold"),
+    legend.position = "bottom",
+    plot.caption = element_text(size = 9, color = "gray50", hjust = 0),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+
+p1
+p2
+
+
+
+##### Production Charts ##### 
+
+```
+
+# Unused stuff (early drafts)
+
+```{r unused_analyses}
+# human
+overall_slope_variance_human <- human_model_random_slopes %>%
+    group_by(user_id) %>%
+    summarise(
+        total_slope_variance = var(.value),
+        total_slope_sd = sd(.value)
+    ) %>%
+    summarise(
+        mean_variance = mean(total_slope_variance),
+        mean_sd = mean(total_slope_sd)
+    )
+
+slope_variance_by_item_human <- human_model_random_slopes %>%
+    group_by(item_name, user_id) %>%
+    summarise(
+        slope_variance = var(.value),
+        slope_sd = sd(.value),
+        .groups = "drop"
+    ) %>%
+    # Summarize across posterior draws
+    group_by(item_name) %>%
+    summarise(
+        mean_variance = mean(slope_variance),
+        mean_sd = mean(slope_sd),
+        .groups = "drop"
+    )
+
+mean_slope_variance_human_by_item <- human_model_random_slopes %>%
+    group_by(user_id, item_name) |> 
+    summarize(
+        #slope_variance = var(.value),
+        slope_sd = sd(.value)
+    ) |> 
+  group_by(item_name) |> 
+    summarize(
+        #mean_variance = mean(slope_variance),
+        mean_sd = mean(slope_sd)
+    ) |> arrange(nchar(item_name), item_name)
+
+# llm
+mean_slope_variance_llm_by_item <- llm_model_random_slopes %>%
+    group_by(user_id, item_name) |> 
+    summarise(
+        #slope_variance = var(.value),
+        slope_sd = sd(.value)
+    ) |> 
+  group_by(item_name) |> 
+    summarize(
+        #mean_variance = mean(slope_variance),
+        mean_sd = mean(slope_sd)
+    ) |> arrange(nchar(item_name), item_name)
+
+slope_variance_by_item_llm <- llm_model_random_slopes %>%
+    group_by(item_name, user_id) %>%
+    summarise(
+        slope_variance = var(.value),
+        slope_sd = sd(.value),
+        .groups = "drop"
+    ) %>%
+    # Summarize across posterior draws
+    group_by(item_name) %>%
+    summarise(
+        mean_variance = mean(slope_variance),
+        mean_sd = mean(slope_sd),
+        .groups = "drop"
+    )
+
+(overall_slope_variance_human)
+(slope_variance_by_item_human)
+(overall_slope_variance_llm)
+(slope_variance_by_item_llm)
+
+llm_to_hum_var_ratio_by_item <- bind_cols(item = slope_variance_by_item_human$item_name, llm_to_human_var_ratio = slope_variance_by_item_llm$mean_variance/slope_variance_by_item_human$mean_variance) |> 
+  arrange(nchar(item), item) |> bind_cols(class_name = class_names) |> 
+  arrange(llm_to_human_var_ratio)
+
+list(human_model_random_slopes, llm_model_random_slopes) %>%
+  set_names(c("human", "llm")) %>%
+  bind_rows(.id = "user_type") -> combined_posterior_random_slope_draws
+
+
+
+short_names <- as.character(name_mapping)
+names(short_names) <- paste0("item", 1:length(name_mapping))
+
+combined_posterior_random_slope_draws %>%
+  group_by(user_type, item_name) |> 
+  mutate(slope_var_by_item = var(.value),
+         slope_sd_by_item = sd(.value)) |> 
+  ungroup() |> 
+  group_by(user_type, item_name, user_id) %>%
+  summarize(
+    user_slope_variance = var(.value),
+    user_slope_sd = sd(.value),
+    slope_variance_within_between_groups_ratio = var(.value)/max(slope_var_by_item),
+    slope_sd_within_between_groups_ratio = sd(.value)/max(slope_sd_by_item),
+    .groups = "drop"
+  ) |> 
+  # Create ordered factor with short names
+  mutate(
+    item_short = short_names[item_name],
+    item_short = factor(item_short, 
+                       levels = short_names[paste0("item", 1:14)])  # Adjust number as needed
+  ) |>
+  ggplot(aes(x = (slope_variance_within_between_groups_ratio), fill = user_type)) +
+  geom_density(aes(y = after_stat(scaled)), alpha = 0.5) +
+  facet_wrap(~item_short, ncol = 4, scales = "free_y") +  # Use item_short instead of item_name
+  xlab("Individual/Collective Choice Variance Ratio (Larger = More Human?)") + 
+  labs(fill = "User Type") +
+  scale_fill_manual(labels = c("Human", "AI"), 
+                    values = c("#E69F00", "#0072B2"))
+
+
+
+human_best_choice_fix_effects <- fixef(model_human_categorical_brms) |>
+  as.data.frame() |> 
+  rownames_to_column() |>
+  mutate(item = rowname) |> 
+  filter(str_detect(item, 'mubest_item')) |>
+  select(item, Est.Error) |> 
+  mutate(across('item', str_replace, 'mubest_', ''))
+
+human_best_choice_ran_effect_errors <- ranef(model_human_categorical_brms) |>
+  as.data.frame() |> 
+  rownames_to_column() |> 
+  select(rowname, contains("Est.Error.mubest_item")) |> 
+  rename_with(~ sub(".*_", "", .)) |> 
+  mutate(user_id = rowname, .before = 1) |> 
+  select(-rowname) |> 
+  pivot_longer(cols = starts_with("item"), names_to = "item", values_to = "error")
+
+merged_human_choice_errors <- human_best_choice_ran_effect_errors |> 
+  left_join(human_best_choice_fix_effects)
+
+
+#######
+llm_best_choice_fix_effects <- fixef(model_llm_categorical_brms) |>
+  as.data.frame() |> 
+  rownames_to_column() |>
+  mutate(item = rowname) |> 
+  filter(str_detect(item, 'mubest_item')) |>
+  select(item, Est.Error) |> 
+  mutate(across('item', str_replace, 'mubest_', ''))
+
+llm_best_choice_ran_effect_errors <- ranef(model_llm_categorical_brms) |>
+  as.data.frame() |> 
+  rownames_to_column() |> 
+  select(rowname, contains("Est.Error.mubest_item")) |> 
+  rename_with(~ sub(".*_", "", .)) |> 
+  mutate(user_id = rowname, .before = 1) |> 
+  select(-rowname) |> 
+  pivot_longer(cols = starts_with("item"), names_to = "item", values_to = "error")
+
+merged_llm_choice_errors <- llm_best_choice_ran_effect_errors |> 
+  left_join(llm_best_choice_fix_effects)
+
+merged_llm_choice_errors |> 
+  group_by(item) |> 
+  ggplot(aes(x = error)) +
+  geom_density(aes(y = after_stat(scaled)), alpha = 0.5) +
+  facet_wrap(~item, ncol = 4, scales = "free_y") +
+  xlab("CAPTION") +
+  geom_vline(data = . %>% group_by(item) %>% summarise(Est.Error = first(Est.Error)), 
+             aes(xintercept = Est.Error))
+
+list(merged_human_choice_errors, merged_llm_choice_errors) %>%
+  set_names(c("human", "llm")) %>%
+  bind_rows(.id = "user_type") -> combined_choice_errors
+
+short_names <- as.character(name_mapping)
+names(short_names) <- paste0("item", 1:length(name_mapping))
+
+combined_choice_errors %>%
+  group_by(user_type, item, user_id) %>%
+  # Create ordered factor with short names
+  mutate(
+    item_short = short_names[item],
+    item_short = factor(item_short, 
+                       levels = short_names[paste0("item", 1:14)])  # Adjust number as needed
+  ) |>
+  ggplot(aes(x = (Est.Error), fill = user_type)) +
+  geom_density(aes(y = after_stat(scaled)), alpha = 0.5) +
+  facet_wrap(~item_short, ncol = 4, scales = "free_y") +  # Use item_short instead of item_name
+  xlab("CAPTION") + 
+  labs(fill = "User Type") +
+  scale_fill_manual(labels = c("Human", "AI"), 
+                    values = c("#E69F00", "#0072B2"))
+
+  
+```

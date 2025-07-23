@@ -196,6 +196,12 @@ Temporary Items
 # Output files
 *.json
 *.html
+
+# R files
+*.rds
+*.RData
+*.RHistory
+*.jpg
 # Exception for specific report file
 !ground_truth_maxdiff_comparison/report.html
 *.csv

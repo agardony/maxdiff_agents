@@ -106,7 +106,7 @@ cat("Number of items:", length(human_class_cols), "\n")
 
 ```{r load_llm_data}
 # Read LLM responses data
-llm_responses <- read_csv("../maxdiff_data/maxdiff_responses.csv")
+llm_responses <- read_csv("../maxdiff_data/temp_0.8/maxdiff_responses.csv")
 
 # Create a mapping of long names to short names
 name_mapping <- c(
@@ -480,7 +480,7 @@ gemini_plot <- plot_maxdiff(
 
 ## Comprehensive Comparison Chart
 
-```{r comprehensive_comparison, fig.height=10}
+```{r comprehensive_comparison, fig.height=13.7,fig.width = 10}
 # Create the comprehensive comparison plot
 comprehensive_plot <- plot_comparison_all_models(
   human_data_subset, 
@@ -825,7 +825,7 @@ if (!exists("chance_correlations")) {
   cat("Found", length(all_item_names), "unique item names for trial parsing\n\n")
   
   # Initialize results
-  chance_correlations_<- tibble(
+  chance_correlations<- tibble(
     seed = integer(n_simulations),
     # Combined LLM correlations
     combined_rank_correlation = numeric(n_simulations),
