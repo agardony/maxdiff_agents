@@ -125,7 +125,9 @@ class ModelClient(ABC):
         # Get the Pydantic schema for structured responses
         schema = MaxDiffResponse.model_json_schema()
         
-        prompt = f"""{config.persona} {config.instruction_text}
+        prompt = f"""{config.persona}. You are participating in a MaxDiff (Maximum Difference Scaling) survey. 
+
+{config.instruction_text}
 
 Here are the items to evaluate:
 {items_list}
@@ -154,7 +156,9 @@ Respond only with the JSON object, no additional text."""
         """Create a simplified prompt for OpenAI that relies on response_format for structure."""
         items_list = "\n".join([f"{i+1}. {item.name}" for i, item in enumerate(trial.items)])
         
-        prompt = f"""{config.persona} {config.instruction_text}
+        prompt = f"""{config.persona}. You are participating in a MaxDiff (Maximum Difference Scaling) survey. 
+
+{config.instruction_text}
 
 Here are the items to evaluate:
 {items_list}
@@ -350,7 +354,9 @@ class AnthropicClient(ModelClient):
         """Create a simplified prompt for Anthropic that relies on Instructor for structure."""
         items_list = "\n".join([f"{i+1}. {item.name}" for i, item in enumerate(trial.items)])
         
-        prompt = f"""{config.persona} {config.instruction_text}
+        prompt = f"""{config.persona}. You are participating in a MaxDiff (Maximum Difference Scaling) survey. 
+
+{config.instruction_text}
 
 Here are the items to evaluate:
 {items_list}
@@ -445,7 +451,9 @@ class GoogleClient(ModelClient):
         """Create a simplified prompt for Gemini that relies on response_schema for structure."""
         items_list = "\n".join([f"{i+1}. {item.name}" for i, item in enumerate(trial.items)])
         
-        prompt = f"""{config.persona} {config.instruction_text}
+        prompt = f"""{config.persona}. You are participating in a MaxDiff (Maximum Difference Scaling) survey. 
+
+{config.instruction_text}
 
 Here are the items to evaluate:
 {items_list}
