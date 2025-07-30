@@ -1,0 +1,675 @@
+---
+title: "Bayesian Modeling with LLM Priors"
+author: "Aaron Gardony agardony@gmail.com"
+date: "`r Sys.Date()`"
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, 
+                      fig.width = 12, fig.height = 8, dpi = 300)
+```
+
+# Introduction
+
+This notebook performs Bayesian analysis on MaxDiff survey results using informative priors derived from LLM data. The objective is to assess if including priors from the LLM data allows for similar results as modeling the entire human dataset.
+
+# Libraries
+
+```{r libraries}
+library(tidyverse)
+library(readxl)
+library(brms)
+library(cmdstanr)
+library(emmeans)
+library(tidybayes)
+library(janitor)
+library(tictoc)
+library(psych)
+```
+
+```{r simulation_parameters}
+n_simulations <- 100
+n_users <- 30
+```
+
+
+# Data Loading
+
+```{r load_data}
+# Load LLM data
+llm_responses <- read_csv("../maxdiff_data/temp_2OpenAI_2Google_1Anthropic/maxdiff_responses.csv") |> 
+  clean_names()  # Clean column names
+
+# Load human data
+human_data_indiv_choices <- read_excel("../maxdiff_data/QUX Survey_ Spring '24 - MaxDiff_Future Programming Design & choices (1).xlsx") |> 
+  clean_names()  # Clean column names
+human_data_indiv_choices <- human_data_indiv_choices |> mutate(across(everything(), factor))
+human_data_indiv_choices$item <- as.factor(unname(human_data_indiv_choices$item))
+
+# Create a mapping of long names to short names
+class_names<- c(
+  "Choice Modeling Hands-On: Introduction to Conjoint Analysis and MaxDiff",
+  "Survey Masterclass: Intensive Review of Best Practices for Online Surveys", 
+  "Log Sequence Analysis: Tools to Visualize, Model, and Understand Instrument Logs",
+  "Psychometrics for Survey Scales: Reliability and Validity Assessment for Practitioners",
+  "R-Intensive: In-Person R Programming Bootcamp for Social Scientists in Industry",
+  "The Price is Right: Best Practices in Pricing Research",
+  "HEART UX Metrics Deep Dive: From Best Practices to Leading HEART Workshops with Your Team",
+  "Introduction to Bayesian Statistics: Linear and Hierarchical Linear Bayesian Models in R",
+  "Text Analytics 0 to 60: Sentiment Analysis and Topic Modeling with Natural Language Texts",
+  "Yes, It is Causation, and not Correlation: Models for Causal Inference in R",
+  "Interviewer Training: Improving Your Team's Quant UX Interview Process",
+  "Advanced Choice Modeling Surveys: Advanced Options Beyond Standard Conjoint and MaxDiff",
+  "Segmentation: Running a Successful Segmentation Effort, from the Models through Team Politics",
+  "UX Metrics Sprintmaster Training: How to Lead UX Metrics Sprints"
+)
+
+# Create a mapping of long names to short names
+name_mapping <- c(
+  "Choice Modeling Hands-On: Introduction to Conjoint Analysis and MaxDiff" = "Choice Models",
+  "Survey Masterclass: Intensive Review of Best Practices for Online Surveys" = "Surveys", 
+  "Log Sequence Analysis: Tools to Visualize, Model, and Understand Instrument Logs" = "Log Sequences",
+  "Psychometrics for Survey Scales: Reliability and Validity Assessment for Practitioners" = "Psychometrics",
+  "R-Intensive: In-Person R Programming Bootcamp for Social Scientists in Industry" = "R Programming",
+  "The Price is Right: Best Practices in Pricing Research" = "Pricing",
+  "HEART UX Metrics Deep Dive: From Best Practices to Leading HEART Workshops with Your Team" = "UX Metrics",
+  "Introduction to Bayesian Statistics: Linear and Hierarchical Linear Bayesian Models in R" = "Bayes Stats",
+  "Text Analytics 0 to 60: Sentiment Analysis and Topic Modeling with Natural Language Texts" = "Text Analytics",
+  "Yes, It is Causation, and not Correlation: Models for Causal Inference in R" = "Causal Models",
+  "Interviewer Training: Improving Your Team's Quant UX Interview Process" = "Interviewer-ing",
+  "Advanced Choice Modeling Surveys: Advanced Options Beyond Standard Conjoint and MaxDiff" = "Advanced Choice",
+  "Segmentation: Running a Successful Segmentation Effort, from the Models through Team Politics" = "Segmentation",
+  "UX Metrics Sprintmaster Training: How to Lead UX Metrics Sprints" = "Metrics Sprints"
+)
+
+# Calculate individual-level utility scores using tidyverse
+llm_responses <- llm_responses |>
+  mutate(
+    user_id = str_c(model_name, persona_index, sep = "_"),
+    model_clean = case_when(
+      str_detect(tolower(model_name), "gpt") ~ "GPT",
+      str_detect(tolower(model_name), "claude") ~ "Claude", 
+      str_detect(tolower(model_name), "gemini") ~ "Gemini",
+      TRUE ~ model_name
+    )
+  )
+
+# convert numeric responses to strings for compatibility with brms
+human_data_indiv_choices <- human_data_indiv_choices |>
+  mutate(
+    response = case_when(
+      response == 1 ~ "best",
+      response == -1 ~ "worst", 
+      response == 0 ~ "neither"
+    )
+  )
+```
+
+
+# Convert LLM responses to long format
+
+```{r convert_llm_responses_to_long}
+library(tidyr)
+
+# Create item lookup table from class_names
+item_lookup <- tibble(
+  item_name = as.character(class_names),
+  item = 1:length(class_names)
+)
+
+# Function to format LLM responses to match human_data_indiv_choices structure
+format_llm_to_individual_choices <- function(data) {
+  
+  formatted_data <- data |>
+    mutate(original_row_id = row_number()) |>
+    # Use pattern matching to find which class_names appear in each trial_items string
+    rowwise() |>
+    mutate(
+      matched_items = list({
+        matches <- character(0)
+        for(class_name in as.character(class_names)) {
+          if(str_detect(trial_items, fixed(class_name))) {
+            matches <- c(matches, class_name)
+          }
+        }
+        matches
+      })
+    ) |>
+    ungroup() |>
+    # Unnest to create separate rows for each matched item
+    unnest(matched_items) |>
+    # Join with item lookup table to get numeric item IDs
+    left_join(item_lookup, by = c("matched_items" = "item_name")) |>
+    # Strip names from item column to get just numeric values
+    mutate(item = as.numeric(item)) |>
+    # Create position within each original trial (1-5 for each original row)
+    group_by(original_row_id) |>
+    mutate(position = row_number()) |>
+    ungroup() |>
+    # Create response column based on best/worst item selections
+    mutate(
+      response = case_when(
+        matched_items == best_item_name ~ 1,   # best choice gets 1
+        matched_items == worst_item_name ~ -1, # worst choice gets -1
+        TRUE ~ 0                               # not selected items get 0
+      )
+    ) |>
+    # Select and rename columns to match human_data_indiv_choices format
+    select(
+      record_id = user_id,
+      task = trial_number,
+      position,
+      item,
+      response
+    ) |>
+    filter(!is.na(item)) |>
+    arrange(record_id, task, position)
+  
+  return(formatted_data)
+}
+
+# Apply the transformation
+llm_responses_formatted <- format_llm_to_individual_choices(llm_responses)
+```
+
+# Bayesian Modeling with LLM Data
+
+```{r bayesian_llm_modeling}
+library(afex)
+afex::set_sum_contrasts()
+
+# Prepare LLM data
+
+# convert numeric responses to strings for compatibility with brms
+llm_responses_formatted <- llm_responses_formatted |>
+  mutate(
+    response = case_when(
+      response == 1 ~ "best",
+      response == -1 ~ "worst", 
+      response == 0 ~ "neither"
+    )
+  )
+
+# factor conversion
+llm_responses_formatted <- llm_responses_formatted |> mutate(across(everything(), factor))
+llm_responses_formatted$item <- as.factor(unname(llm_responses_formatted$item)) # strip the names
+
+# Construct the Bayesian model for LLM
+model_llm <- brm(
+  bf(response ~ 0 + item + (1 | ID | record_id)),
+  data = llm_responses_formatted,
+  family = categorical(refcat = "worst"),
+  prior = c(
+    prior(normal(0, 3), class = b, dpar = mubest),
+    prior(normal(0, 3), class = b, dpar = muneither),
+    prior(exponential(1), class = sd, dpar = mubest),
+    prior(exponential(1), class = sd, dpar = muneither)
+  ),
+  chains = 4, cores = 4, iter = 2000, seed = 1234,
+  backend = "cmdstanr", threads = threading(2),
+  file = "model_llm",
+  silent = FALSE
+)
+```
+
+
+# Generate Priors from LLM Model
+```{r generate_priors}
+# Extract posterior draws for mubest coefficients
+llm_mubest_draws <- model_llm |> 
+  gather_draws(`^b_mubest_item.*$`, regex = TRUE)
+
+# Extract posterior draws for muneither coefficients
+llm_muneither_draws <- model_llm |> 
+  gather_draws(`^b_muneither_item.*$`, regex = TRUE)
+
+# Calculate mean and HDI for mubest coefficients
+llm_mubest_priors_df <- llm_mubest_draws |>
+  group_by(.variable) |>
+  summarise(
+    mean_est = mean(.value),
+    mean_sd = sd(.value),
+    #hdi_lower = hdi(.value)[1],
+    #hdi_upper = hdi(.value)[2],
+    #hdi_width = hdi_upper - hdi_lower,
+    .groups = "drop"
+  ) |>
+  mutate(
+    # Construct weakly informative prior mean and sd
+    prior_mean = mean_est,
+    prior_sd = mean_sd * 10#hdi_width * 2
+  )
+
+# Calculate mean and HDI for muneither coefficients
+llm_muneither_priors_df <- llm_muneither_draws |>
+  group_by(.variable) |>
+  summarise(
+    mean_est = mean(.value),
+    mean_sd = sd(.value),
+    #hdi_lower = hdi(.value)[1],
+    #hdi_upper = hdi(.value)[2],
+    #hdi_width = hdi_upper - hdi_lower,
+    .groups = "drop"
+  ) |>
+  mutate(
+    # Construct weakly informative prior mean and sd
+    prior_mean = mean_est,
+    prior_sd = mean_sd * 10#hdi_width
+  )
+
+# Create prior specifications for brms
+priors <- NULL
+
+# Add mubest priors
+for(i in 1:nrow(llm_mubest_priors_df)) {
+  coef_name <- str_remove(llm_mubest_priors_df$.variable[i], "b_mubest_")
+  
+  new_prior <- prior_string(paste0("normal(", llm_mubest_priors_df$prior_mean[i], ", ", llm_mubest_priors_df$prior_sd[i], ")"), 
+                           class = "b", 
+                           coef = coef_name,
+                           dpar = "mubest")
+  
+  priors <- if(is.null(priors)) new_prior else priors + new_prior
+}
+
+# Add muneither priors
+for(i in 1:nrow(llm_muneither_priors_df)) {
+  coef_name <- str_remove(llm_muneither_priors_df$.variable[i], "b_muneither_")
+  
+  new_prior <- prior_string(paste0("normal(", llm_muneither_priors_df$prior_mean[i], ", ", llm_muneither_priors_df$prior_sd[i], ")"), 
+                           class = "b", 
+                           coef = coef_name,
+                           dpar = "muneither")
+  
+  priors <- priors + new_prior
+}
+
+# Add priors for sd parameters
+priors <- c(priors,
+  prior(exponential(1), class = sd, dpar = mubest),
+  prior(exponential(1), class = sd, dpar = muneither)
+)
+```
+
+# Fit Omnibus Model with All Human Data (Run Once)
+
+```{r omnibus_model}
+# Fit the omnibus model with all human data
+model_human_omnibus <- brm(
+  bf(response ~ 0 + item + (1 | ID | record_id)),
+  data = human_data_indiv_choices,
+  family = categorical(refcat = "worst"),
+  prior = c(
+    prior(normal(0, 3), class = b, dpar = mubest),
+    prior(normal(0, 3), class = b, dpar = muneither),
+    prior(exponential(1), class = sd, dpar = mubest),
+    prior(exponential(1), class = sd, dpar = muneither)
+  ),
+  chains = 4, cores = 4, iter = 2000, seed = 1234,
+  backend = "cmdstanr", threads = threading(2),
+  file = "model_human_omnibus",
+  silent = FALSE
+)
+
+# Get omnibus model mubest coefficients (these remain constant across n_users loops)
+omnibus_mubest <- fixef(model_human_omnibus)[grepl("mubest", rownames(fixef(model_human_omnibus))), "Estimate"]
+names(omnibus_mubest) <- str_remove(names(omnibus_mubest), "mubest_")
+
+# Get omnibus model mubest standard deviations
+omnibus_mubest_sds <- fixef(model_human_omnibus)[grepl("mubest", rownames(fixef(model_human_omnibus))), "Est.Error"]
+names(omnibus_mubest_sds) <- str_remove(names(omnibus_mubest_sds), "mubest_")
+
+# Calculate mean SD for omnibus model
+mean_sd_omnibus <- mean(omnibus_mubest_sds)
+
+# Calculate LLM prior ranking correlation (constant across n_users loops)
+prior_betas <- llm_mubest_priors_df |> arrange(nchar(.variable), .variable) |> select(.variable, mean_est)
+prior_ranks <- rank(-prior_betas$mean_est)
+names(prior_ranks) = names(omnibus_mubest)
+omnibus_ranks <- rank(-omnibus_mubest)
+cor_prior_ranks <- cor(omnibus_ranks, prior_ranks, method = "spearman")
+```
+
+# Bayesian Modeling on Random Human Samples
+
+```{r bayesian_human_sample_modeling}
+set.seed(1234)
+# Create random samples from the human data
+user_ids <- unique(human_data_indiv_choices$record_id)
+results_list_llm_prior <- list()
+results_list_flat_prior <- list()
+# Add lists to store standard deviations
+results_sds_llm_prior <- list()
+results_sds_flat_prior <- list()
+
+tic.clearlog()
+for (i in 1:n_simulations) {
+  tic()
+  # Sample {n_users} users
+  random_user_ids <- sample(user_ids, n_users)
+  sampled_data <- human_data_indiv_choices %>%
+    filter(record_id %in% random_user_ids)
+  
+  # Fit model with informative priors from LLM
+  llm_informed_prior_model <- brm(
+    formula = response ~ 0 + item + (1 | ID | record_id),
+    data = sampled_data,
+    family = categorical(refcat = "worst"),
+    prior = priors,
+    chains = 4, cores = 4, iter = 1000, seed = 1234,
+    backend = "cmdstanr", threads = threading(2),
+    refresh = 0,
+    silent = 2
+  )
+  flat_prior_model <- brm(
+    formula = response ~ 0 + item + (1 | ID | record_id),
+    data = sampled_data,
+    family = categorical(refcat = "worst"),
+    #prior = priors,
+    chains = 4, cores = 4, iter = 1000, seed = 1234,
+    backend = "cmdstanr", threads = threading(2),
+    refresh = 0,
+    silent = 2
+  )
+  
+  # Extract mubest coefficients directly from the models
+  mubest_coefs_llm_prior <- fixef(llm_informed_prior_model)[grepl("mubest", x = rownames(fixef(llm_informed_prior_model))), "Estimate"]
+  results_list_llm_prior[[i]] <- mubest_coefs_llm_prior
+  
+  mubest_coefs_flat_prior <- fixef(flat_prior_model)[grepl("mubest", rownames(fixef(flat_prior_model))), "Estimate"]
+  results_list_flat_prior[[i]] <- mubest_coefs_flat_prior
+  
+  # Extract mubest standard deviations from the models
+  mubest_sds_llm_prior <- fixef(llm_informed_prior_model)[grepl("mubest", x = rownames(fixef(llm_informed_prior_model))), "Est.Error"]
+  results_sds_llm_prior[[i]] <- mubest_sds_llm_prior
+  
+  mubest_sds_flat_prior <- fixef(flat_prior_model)[grepl("mubest", rownames(fixef(flat_prior_model))), "Est.Error"]
+  results_sds_flat_prior[[i]] <- mubest_sds_flat_prior
+  
+  toc(log = TRUE, quiet = TRUE)
+  
+  # Progress indicator
+  if (i %% 5 == 0) {
+  cat("Completed", i, "of", n_simulations, "simulations\n")
+  
+  # Get all timing data
+  timing_log <- tic.log(format = FALSE)
+  
+  if (length(timing_log) > 0) {
+    # Calculate total elapsed time for all iterations so far
+    total_elapsed <- sum(sapply(timing_log, function(x) x$toc - x$tic))
+    
+    # Average time per iteration
+    avg_time_per_iteration <- total_elapsed / i
+    
+    # Estimate remaining time
+    remaining_time_minutes <- (n_simulations - i) * avg_time_per_iteration / 60
+    
+    cat("Avg per iteration:", round(avg_time_per_iteration, 1), "sec |", 
+        "ETA:", round(remaining_time_minutes, 1), "min\n\n")
+  }
+}
+}
+```
+
+# Analysis of Results
+
+```{r analyze_results}
+# Calculate Spearman correlations and top 5 item overlap for LLM prior
+sample_correlations_llm_prior <- sapply(results_list_llm_prior, function(sample_mubest) {
+  # Ensure same ordering of items
+  names(sample_mubest) <- str_remove(names(sample_mubest), "mubest_")
+  
+  # Create rankings
+  omnibus_ranks <- rank(-omnibus_mubest)
+  sample_ranks <- rank(-sample_mubest[names(omnibus_mubest)])
+  
+  # Calculate Spearman correlation
+  cor(omnibus_ranks, sample_ranks, method = "spearman")
+})
+
+# Calculate mean SDs for LLM prior samples
+sample_sds_llm_prior <- sapply(results_sds_llm_prior, function(sample_sds) {
+  return(mean(sample_sds))
+})
+
+# Calculate mean SD across all LLM prior samples
+mean_sd_llm_prior <- mean(sample_sds_llm_prior)
+
+top5_overlap_llm_prior <- sapply(results_list_llm_prior, function(sample_mubest) {
+  # Ensure same ordering of items
+  names(sample_mubest) <- str_remove(names(sample_mubest), "mubest_")
+  
+  # Create rankings
+  omnibus_ranks <- rank(-omnibus_mubest)
+  sample_ranks <- rank(-sample_mubest[names(omnibus_mubest)])
+  
+  # Get top 5 items for each ranking (highest ranks)
+  omnibus_top5 <- names(sort(omnibus_ranks, decreasing = TRUE)[1:5])
+  sample_top5 <- names(sort(sample_ranks, decreasing = TRUE)[1:5])
+  
+  # Calculate proportion of overlap
+  overlap_count <- length(intersect(omnibus_top5, sample_top5))
+  overlap_proportion <- overlap_count / 5
+  
+  return(overlap_proportion)
+})
+
+# Calculate Spearman correlations and top 5 item overlap for flat prior
+sample_correlations_flat_prior <- sapply(results_list_flat_prior, function(sample_mubest) {
+  # Ensure same ordering of items
+  names(sample_mubest) <- str_remove(names(sample_mubest), "mubest_")
+  
+  # Create rankings
+  omnibus_ranks <- rank(-omnibus_mubest)
+  sample_ranks <- rank(-sample_mubest[names(omnibus_mubest)])
+  
+  # Calculate Spearman correlation
+  cor(omnibus_ranks, sample_ranks, method = "spearman")
+})
+
+# Calculate mean SDs for flat prior samples
+sample_sds_flat_prior <- sapply(results_sds_flat_prior, function(sample_sds) {
+  return(mean(sample_sds))
+})
+
+# Calculate mean SD across all flat prior samples
+mean_sd_flat_prior <- mean(sample_sds_flat_prior)
+
+top5_overlap_flat_prior <- sapply(results_list_flat_prior, function(sample_mubest) {
+  # Ensure same ordering of items
+  names(sample_mubest) <- str_remove(names(sample_mubest), "mubest_")
+  
+  # Create rankings
+  omnibus_ranks <- rank(-omnibus_mubest)
+  sample_ranks <- rank(-sample_mubest[names(omnibus_mubest)])
+  
+  # Get top 5 items for each ranking (highest ranks)
+  omnibus_top5 <- names(sort(omnibus_ranks, decreasing = TRUE)[1:5])
+  sample_top5 <- names(sort(sample_ranks, decreasing = TRUE)[1:5])
+  
+  # Calculate proportion of overlap
+  overlap_count <- length(intersect(omnibus_top5, sample_top5))
+  overlap_proportion <- overlap_count / 5
+  
+  return(overlap_proportion)
+})
+
+# Calculate mean top 5 overlap proportions
+mean_top5_overlap_llm <- mean(top5_overlap_llm_prior)
+mean_top5_overlap_flat <- mean(top5_overlap_flat_prior)
+
+# Calculate probability that top human item is in top 5 LLM sets
+top_human_in_llm_top5 <- sapply(results_list_llm_prior, function(sample_mubest) {
+  names(sample_mubest) <- str_remove(names(sample_mubest), "mubest_")
+  omnibus_ranks <- rank(-omnibus_mubest)
+  sample_ranks <- rank(-sample_mubest[names(omnibus_mubest)])
+  top_human_item <- names(which(omnibus_ranks == max(omnibus_ranks)))
+  sample_top5 <- names(sort(sample_ranks, decreasing = TRUE)[1:5])
+  as.numeric(top_human_item %in% sample_top5)
+})
+
+top_human_in_flat_top5 <- sapply(results_list_flat_prior, function(sample_mubest) {
+  names(sample_mubest) <- str_remove(names(sample_mubest), "mubest_")
+  omnibus_ranks <- rank(-omnibus_mubest)
+  sample_ranks <- rank(-sample_mubest[names(omnibus_mubest)])
+  top_human_item <- names(which(omnibus_ranks == max(omnibus_ranks)))
+  sample_top5 <- names(sort(sample_ranks, decreasing = TRUE)[1:5])
+  as.numeric(top_human_item %in% sample_top5)
+})
+
+# Calculate probabilities
+prob_top_human_in_llm_top5 <- mean(top_human_in_llm_top5)
+prob_top_human_in_flat_top5 <- mean(top_human_in_flat_top5)
+
+# Calculate probability of exact top item match
+top_item_matches_llm_prior <- sapply(results_list_llm_prior, function(sample_mubest) {
+  names(sample_mubest) <- str_remove(names(sample_mubest), "mubest_")
+  omnibus_ranks <- rank(-omnibus_mubest)
+  sample_ranks <- rank(-sample_mubest[names(omnibus_mubest)])
+  omnibus_top <- names(which(omnibus_ranks == max(omnibus_ranks)))
+  sample_top <- names(which(sample_ranks == max(sample_ranks)))
+  as.numeric(omnibus_top == sample_top)
+})
+
+top_item_matches_flat_prior <- sapply(results_list_flat_prior, function(sample_mubest) {
+  names(sample_mubest) <- str_remove(names(sample_mubest), "mubest_")
+  omnibus_ranks <- rank(-omnibus_mubest)
+  sample_ranks <- rank(-sample_mubest[names(omnibus_mubest)])
+  omnibus_top <- names(which(omnibus_ranks == max(omnibus_ranks)))
+  sample_top <- names(which(sample_ranks == max(sample_ranks)))
+  as.numeric(omnibus_top == sample_top)
+})
+
+prob_correct_llm <- mean(top_item_matches_llm_prior)
+prob_correct_flat <- mean(top_item_matches_flat_prior)
+
+## Visualize Distributions of Correlations (Side-by-side)
+
+# Create combined data frame for both prior types
+correlation_df <- tibble(
+  rho = c(sample_correlations_llm_prior, sample_correlations_flat_prior),
+  prior_type = rep(c("LLM Prior", "Flat Prior"), 
+                   c(length(sample_correlations_llm_prior), 
+                     length(sample_correlations_flat_prior)))
+)
+
+# Create side-by-side density plots
+correlation_plot <- ggplot(correlation_df, aes(x = rho)) +
+  geom_density(aes(fill = prior_type), alpha = 0.3) +
+  scale_fill_manual(name = "Prior Type",
+                    labels = c("Flat Prior", "LLM-Informed Prior"), 
+                    values = c("#E69F00", "#0072B2")) + 
+  scale_color_manual(name = "Prior Type",
+                    labels = c("Flat Prior", "LLM-Informed Prior"), 
+                    values = c("#E69F00", "#0072B2")) + 
+  geom_vline(data = correlation_df %>% 
+               group_by(prior_type) %>% 
+               summarise(median_rho = median(rho)), 
+             aes(xintercept = median_rho, color = prior_type), 
+             linetype = "dashed", size = 1) +
+  geom_vline(aes(xintercept = cor_prior_ranks), color = "red", alpha = 0.2, 
+             linetype = "solid", size = 1) +
+  # Add horizontal labels for dashed lines
+  geom_text(data = correlation_df %>% 
+              group_by(prior_type) %>% 
+              summarise(median_rho = median(rho)) %>%
+              mutate(
+                label = paste0("ρ=", sprintf("%.2f", median_rho)),
+                hjust_val = ifelse(prior_type == "Flat Prior", 1.1, -0.1),  # Left of line for flat, right for LLM
+                text_color = ifelse(prior_type == "Flat Prior", "#E69F00", "#0072B2")
+              ),
+            aes(x = median_rho, y = 14, label = label, hjust = hjust_val),
+            color = correlation_df %>% 
+              group_by(prior_type) %>% 
+              summarise(median_rho = median(rho)) %>%
+              mutate(text_color = ifelse(prior_type == "Flat Prior", "#E69F00", "#0072B2")) %>%
+              pull(text_color),
+            size = 4, fontface = "bold",
+            inherit.aes = FALSE) +
+  # Add text overlay
+  geom_label(data = data.frame(x = 0.02, y = 11.2), 
+             aes(x = x, y = y), 
+             label = paste0("Mean SD of Estimates (Uncertainty):\nOmnibus = ",
+                           round(mean_sd_omnibus, 3),
+                           "\nLLM Prior = ",
+                           round(mean_sd_llm_prior, 2),
+                           "\nFlat Prior = ",
+                           round(mean_sd_flat_prior, 2),
+                           "\n\nMean % overlap (top 5 items):\nLLM Prior = ", 
+                           round(mean_top5_overlap_llm, 2), 
+                           "\nFlat Prior = ", 
+                           round(mean_top5_overlap_flat, 2),
+                           "\n\nMean P(top item in top 5):\nLLM Prior = ",
+                           round(prob_top_human_in_llm_top5, 2),
+                           "\nFlat Prior = ",
+                           round(prob_top_human_in_flat_top5, 2),
+                           "\n\nP(exact top item match):\nLLM Prior = ",
+                           round(prob_correct_llm, 2),
+                           "\nFlat Prior = ",
+                           round(prob_correct_flat, 2)),
+             hjust = 0, vjust = 1, size = 3.5, 
+             color = "black", fontface = "bold",fill = "white", 
+             label.padding = unit(0.3, "lines"),
+             inherit.aes = FALSE) +
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
+  scale_y_continuous(limits = c(0, 15), breaks = seq(0, 15, 5)) +
+  labs(
+    x = "Spearman Correlation (ρ)",
+    y = "Density",
+    title = "Distributions of Sub-Sample Ranking Alignment with Full Sample by Prior Type",
+    subtitle = paste0("n=", n_users, " human samples and full human dataset (n=308)"),
+    caption = "Red line: LLM-based prior rank correlation with full sample. Dashed line: Correlation distribution medians for each model."
+  ) +
+  theme_minimal() +
+  theme(
+  plot.title = element_text(size = 20, face = "bold"),
+  plot.subtitle = element_text(size = 16),
+  strip.text = element_text(size = 16, face = "bold"),
+  legend.position = "bottom",
+  legend.text = element_text(size = 16),
+  legend.title = element_text(size = 16),
+  axis.title = element_text(size = 14),
+  axis.text = element_text(size = 14),
+  plot.caption = element_text(size = 12, color = "gray50", hjust = 0),
+)
+
+print(correlation_plot)
+
+  # Save the plot
+  ggsave(filename = paste0("correlation_plot_", n_users, ".png"), 
+         plot = correlation_plot, width = 12, height = 9, dpi = 300, bg = "white")
+
+# Statistical tests
+fisherZTest <- psych::r.test(n = n_simulations, r12 = mean(sample_correlations_llm_prior), r34 = mean(sample_correlations_flat_prior))
+fisherZTest_llm_0.7 <- psych::r.test(n = length(omnibus_mubest), r12 = mean(sample_correlations_llm_prior), r34 = 0.7)
+fisherZTest_flat_0.7 <- psych::r.test(n = length(omnibus_mubest), r12 = mean(sample_correlations_flat_prior), r34 = 0.7)
+
+# t-test for top 5 overlap
+top5_ttest <- t.test(top5_overlap_llm_prior, top5_overlap_flat_prior)
+
+# Proportion tests
+top_human_prop_test <- prop.test(c(sum(top_human_in_llm_top5), sum(top_human_in_flat_top5)),
+                                 c(length(top_human_in_llm_top5), length(top_human_in_flat_top5)))
+
+exact_top_prop_test <- prop.test(c(sum(top_item_matches_llm_prior), sum(top_item_matches_flat_prior)),
+                                 c(length(top_item_matches_llm_prior), length(top_item_matches_flat_prior)))
+```
+
+# Summary of Results
+```{r print_summary}
+# Summary statistics for both prior types
+cat("\n=== SUMMARY FOR n_users = ", n_users, " ===\n")
+cat("LLM Prior - Mean correlation:", round(mean(sample_correlations_llm_prior), 3), "\n")
+cat("Flat Prior - Mean correlation:", round(mean(sample_correlations_flat_prior), 3), "\n")
+cat("Difference (LLM - Flat):", round(mean(sample_correlations_llm_prior) - mean(sample_correlations_flat_prior), 3), "\n")
+cat("Fisher Z test p-value:", round(fisherZTest$p, 4), "\n")
+cat("Mean top 5 overlap - LLM:", round(mean_top5_overlap_llm, 3), "| Flat:", round(mean_top5_overlap_flat, 3), "\n")
+cat("P(exact top match) - LLM:", round(prob_correct_llm, 3), "| Flat:", round(prob_correct_flat, 3), "\n\n")
+```
+
